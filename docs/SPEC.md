@@ -383,7 +383,7 @@ budget: max 16 tool calls, max 120 s wall, max 60k input tokens. Exceeding a bud
 
 The loop is a plain tool-use loop: the model calls tools, results go back as tool results, and the loop ends when the model calls `submit_report`. No framework is needed, and it's easier to instrument and explain without one.
 
-**LLM provider.** A thin `LLMClient` protocol with one implementation to start: Anthropic's Messages API with tool use. Default model `claude-sonnet-5-5`; `claude-haiku-5-5` is a cheaper configuration worth evaluating as its own row in the results (cost/accuracy trade-off). Token counts come from the API response `usage` field. Cost is computed from a `pricing.yaml` you fill in from the provider's current price list, not from hardcoded numbers.
+**LLM provider.** A thin `LLMClient` over Groq's OpenAI-compatible chat-completions API with tool calling. Models: `openai/gpt-oss-20b` (main results) and `openai/gpt-oss-120b` (size comparison), both on Groq's free tier. Token counts come from the API response `usage` field.
 
 ### 7.2 Tools
 
