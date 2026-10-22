@@ -1,0 +1,26 @@
+id: f3-timeout-stream-processor-metadata-a
+fault:
+  fault_type: upstream_timeout_misconfig
+  target: stream-processor->metadata
+  intensity: 0.7
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 13
+label:
+  root_cause:
+    service: stream-processor
+    fault_type: upstream_timeout_misconfig
+  key_evidence:
+  - kind: change
+    service: stream-processor
+    change_kind: config
+  - kind: metric
+    service: stream-processor
+    signal: dependency_error_ratio
+    labels:
+      peer_service: metadata
+  - kind: log
+    service: stream-processor
+    pattern: Upstream metadata call .* exceeded deadline

@@ -1,0 +1,21 @@
+id: f2-latency-query-engine-b
+fault:
+  fault_type: dependency_latency
+  target: query-engine
+  intensity: 0.6
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 9
+label:
+  root_cause:
+    service: query-engine
+    fault_type: dependency_latency
+  key_evidence:
+  - kind: metric
+    service: query-engine
+    signal: latency_p95
+  - kind: trace
+    service: query-engine
+    signal: span_duration

@@ -1,0 +1,24 @@
+id: f5-deploy-metadata-a
+fault:
+  fault_type: bad_deploy_errors
+  target: metadata
+  intensity: 0.3
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 19
+label:
+  root_cause:
+    service: metadata
+    fault_type: bad_deploy_errors
+  key_evidence:
+  - kind: change
+    service: metadata
+    change_kind: deploy
+  - kind: metric
+    service: metadata
+    signal: error_ratio
+  - kind: log
+    service: metadata
+    pattern: Unhandled error

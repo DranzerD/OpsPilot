@@ -1,0 +1,26 @@
+id: f1-pool-stream-processor-b
+fault:
+  fault_type: db_pool_exhaustion
+  target: stream-processor
+  intensity: 1.0
+  params:
+    leak_interval_s: 25
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 3
+label:
+  root_cause:
+    service: stream-processor
+    fault_type: db_pool_exhaustion
+  key_evidence:
+  - kind: metric
+    service: stream-processor
+    signal: db_pool_utilization
+  - kind: metric
+    service: stream-processor
+    signal: db_pool_wait_p95
+  - kind: log
+    service: stream-processor
+    pattern: Timed out acquiring connection from pool

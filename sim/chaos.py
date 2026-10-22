@@ -193,7 +193,7 @@ def router(service: str, db: PlatformDB | None) -> APIRouter:
             current.stop()
 
     @api.post("/chaos", status_code=204)
-    def activate(spec: FaultSpec) -> None:
+    async def activate(spec: FaultSpec) -> None:
         if spec.fault_type not in IN_PROCESS_FAULTS:
             raise HTTPException(400, f"{spec.fault_type} is applied through the control plane")
         if spec.target != service:
@@ -209,11 +209,11 @@ def router(service: str, db: PlatformDB | None) -> APIRouter:
         faults.activate(spec)
 
     @api.get("/chaos")
-    def list_active() -> list[FaultSpec]:
+    async def list_active() -> list[FaultSpec]:
         return faults.active()
 
     @api.delete("/chaos", status_code=204)
-    def clear() -> None:
+    async def clear() -> None:
         faults.clear()
         _stop_leak()
 

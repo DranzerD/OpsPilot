@@ -18,6 +18,9 @@ def test_def_is_consistent(path):
     services = set(topo.services) | set(topo.databases)
 
     assert scenario.id == path.stem
+    if scenario.label.root_cause is None:
+        assert scenario.fault.fault_type == "none" and scenario.label.expected_abstain
+        return
     assert scenario.label.root_cause.service in services
     assert scenario.label.root_cause.fault_type == scenario.fault.fault_type
     for target in scenario.fault.target.split("->"):

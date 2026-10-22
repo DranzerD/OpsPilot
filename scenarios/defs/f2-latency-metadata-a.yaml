@@ -1,0 +1,21 @@
+id: f2-latency-metadata-a
+fault:
+  fault_type: dependency_latency
+  target: metadata
+  intensity: 0.2
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 5
+label:
+  root_cause:
+    service: metadata
+    fault_type: dependency_latency
+  key_evidence:
+  - kind: metric
+    service: metadata
+    signal: latency_p95
+  - kind: trace
+    service: metadata
+    signal: span_duration

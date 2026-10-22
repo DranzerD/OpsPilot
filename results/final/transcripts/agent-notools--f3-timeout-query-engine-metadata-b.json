@@ -1,0 +1,28 @@
+[
+ {
+  "role": "system",
+  "content": "You are an SRE investigating an incident on a data platform. Find the root cause: the single service whose own fault started the problem, and what kind of fault it is.\n\nPlatform services and dependencies (caller -> callees):\n- gateway (Public API for interactive queries) -> query-engine, metadata\n- query-engine (Plans and executes queries over datasets) -> metadata, platform-db\n- metadata (Dataset catalog, schemas and partitions, with an in-process cache) -> platform-db\n- scheduler (Triggers the nightly ingest pipeline and retries failed jobs) -> stream-processor, metadata\n- stream-processor (Runs ingest jobs that write dataset partitions) -> metadata, platform-db\n\nFault types:\n- db_pool_exhaustion: the service's database connection pool is exhausted (e.g. leaked connections)\n- dependency_latency: the service itself became slow, slowing everything that calls it\n- upstream_timeout_misconfig: the service's timeout for calls to a dependency is misconfigured too low\n- bad_input_job_failure: batch jobs fail on malformed/invalid input data\n- bad_deploy_errors: a new deploy of the service introduced errors\n- slow_query: a database query became slow\n- memory_leak: the service's memory grows until it degrades\n- consumer_backpressure: a stream consumer can't keep up; lag grows\n- retry_storm: aggressive retries amplify load on a dependency\n- cache_disabled: a cache stopped working, increasing load and latency\n- db_disk_full: the database cannot write (disk full)\n- other: none of the above\n\nHow to work:\n- Start from the briefing. Symptoms propagate UP the call graph: when a service is slow or failing, its callers show errors/latency too. The root cause is usually the most downstream service with its own anomaly, or the service that changed (deploy/config) right before symptoms.\n- Background noise exists: the batch pipeline runs every 2 minutes and briefly raises latency on services that touch the database. Anomalies marked \"(minor)\" are within that normal variation. If the briefing has only minor anomalies and no error log patterns, error spans or changes, submit \"no_incident\" without drilling down.\n- Check the timeline: the cause starts first. Changes that happen after symptoms began, or that restore earlier settings, are reactions, not causes.\n- Drill down with tools only when it changes your answer. You have at most 1 turns.\n- If nothing is meaningfully wrong (no clear anomaly or error pattern), submit status \"no_incident\". If something is wrong but evidence doesn't support a cause, submit \"insufficient_evidence\".\n- Cite evidence ids (ev_...) exactly as given; never invent ids.\n- Finish by calling submit_diagnosis with up to 3 ranked hypotheses."
+ },
+ {
+  "role": "user",
+  "content": "Incident briefing:\n\nWindow 13:29:18-13:33:18 UTC; first 60s used as the normal reference.\n\n## Anomalous signals (earliest first)\n[ev_f5326baa] query-engine error_ratio: 0.0% -> 43.7%, from 13:31:23\n[ev_8d2c3bc6] gateway error_ratio: 0.0% -> 21.8%, from 13:31:23\n[ev_da49b5f7] gateway dependency_error_ratio peer_service=query-engine: 0.0% -> 43.7%, from 13:31:28\n[ev_856af3c0] query-engine dependency_error_ratio peer_service=metadata: 0.0% -> 24.0%, from 13:31:28\n[ev_542bd296] stream-processor dependency_latency_p95 peer_service=metadata: 40ms -> 130ms, from 13:31:48 (minor)\n[ev_8438235a] stream-processor db_operation_p95 db_operation_name=INSERT records: 29ms -> 80ms, from 13:31:53 (minor)\n[ev_2638877a] stream-processor db_operation_p95 db_operation_name=DELETE records: 40ms -> 90ms, from 13:31:53 (minor)\n\n## New/increased WARNING+ERROR log patterns\n[ev_878ee859] gateway ERROR x572 (x0 before) from 13:30:48: Upstream query-engine call /query failed: HTTP <n>\n[ev_85ce3946] query-engine ERROR x345 (x0 before) from 13:30:48: Upstream metadata call /datasets/{name}/partitions exceeded deadline (<n>s)\n[ev_154813d0] query-engine ERROR x227 (x0 before) from 13:30:50: Upstream metadata call /datasets/{name} exceeded deadline (<n>s)\n\n## Changes (deploys, config, restarts)\n[ev_a6196285] query-engine: 13:30:48 query-engine: dependencies.metadata.timeout_s changed from 2.0 to 0.0014\n[ev_bcb618be] query-engine: 13:33:18 query-engine: dependencies.metadata.timeout_s changed from 0.0014 to 2.0\n\n## Span behaviour\n[ev_caccb6ce] gateway error spans 0 -> 572 (POST /api/query x572)\n[ev_4b2cedfb] query-engine error spans 0 -> 572 (POST /query x572)"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_b5801c6f-ff59-4b37-b739-f0e18bac4296",
+    "type": "function",
+    "function": {
+     "name": "submit_diagnosis",
+     "arguments": "{\"hypotheses\":[{\"confidence\":0.95,\"evidence\":[\"ev_a6196285\",\"ev_85ce3946\",\"ev_154813d0\",\"ev_878ee859\",\"ev_856af3c0\"],\"fault_type\":\"upstream_timeout_misconfig\",\"service\":\"query-engine\",\"summary\":\"Metadata timeout misconfigured to 1.4ms causing query-engine to fail metadata calls, propagating errors to gateway.\"}],\"status\":\"diagnosed\",\"summary\":\"Query-engine misconfigured metadata timeout caused cascading failures.\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_b5801c6f-ff59-4b37-b739-f0e18bac4296",
+  "content": "submitted"
+ }
+]

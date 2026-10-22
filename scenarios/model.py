@@ -52,10 +52,10 @@ class RootCause(BaseModel):
 
 
 class Label(BaseModel):
-    root_cause: RootCause
+    root_cause: RootCause | None  # None for no-fault scenarios
     acceptable_alternates: list[RootCause] = []
     expected_abstain: bool = False
-    key_evidence: list[EvidenceSelector]
+    key_evidence: list[EvidenceSelector] = []
 
 
 class ScenarioDef(BaseModel):

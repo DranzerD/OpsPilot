@@ -379,7 +379,10 @@ def main(argv: list[str]) -> int:
         if (args.out / scenario.id).exists() and not args.force:
             print(f"[{scenario.id}] bundle exists, skipping (use --force)")
             continue
-        record(scenario, control, args.out, args.cooldown)
+        try:
+            record(scenario, control, args.out, args.cooldown)
+        except Exception as exc:  # noqa: BLE001 - one bad scenario shouldn't sink an unattended batch
+            print(f"[{scenario.id}] FAILED: {type(exc).__name__}: {exc}", flush=True)
     faults.reset(control)
     return 0
 

@@ -1,0 +1,13 @@
+id: f0-no-fault-c
+fault:
+  fault_type: none
+  target: platform
+  intensity: 0.0
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 23
+label:
+  root_cause: null
+  expected_abstain: true

@@ -1,12 +1,87 @@
 # OpsPilot
 
-A simulated multi-service data platform with real telemetry, a fault-injection harness, an incident
-pipeline and an evidence-grounded AI incident investigator, evaluated against labelled incidents
-and a rules-based baseline.
+An AI incident investigator for a distributed data platform, measured on labelled failures.
 
-The full design is in [docs/SPEC.md](docs/SPEC.md).
+A five-service data platform runs natively with OpenTelemetry, Prometheus and an OTel Collector.
+A fault-injection harness breaks it in realistic ways and records each incident with its true root
+cause. An LLM agent (gpt-oss-20b via Groq) and a rules-based baseline then diagnose every incident
+from the telemetry, and an evaluation harness scores them.
 
-**Status:** M1 (telemetry) and M2 (fault injection, scenario recorder, bundles) are complete. Incidents and the rules-based baseline (M3) are next.
+The original design is in [docs/SPEC.md](docs/SPEC.md). What's built is a subset (see *Scope* below).
+
+## Results
+
+24 recorded incidents: 21 faults across 5 fault types and 4 services, plus 3 no-fault runs.
+Full per-scenario output is in [results/final/](results/final/).
+
+| System | Top-1 root cause | Top-3 | No-fault runs cleared | Citations valid | Evidence relevance | Median latency | p95 latency | Tokens / run |
+|---|---|---|---|---|---|---|---|---|
+| Rules baseline | **100%** (21/21) | 100% | 3/3 | 100% | 96% | 0.1 s | 0.1 s | 0 |
+| Agent (gpt-oss-20b + tools) | **86%** (18/21) | 86% | 3/3 | 100% (92/92) | 81% | 13.7 s | 29.4 s | 2.5k |
+| Agent, briefing only (no tools) | 76% (16/21) | 81% | 3/3 | 100% (118/118) | 73% | 9.5 s | 14.8 s | 1.5k |
+
+Top-1 by fault type:
+
+| Fault type | Rules | Agent | Agent, no tools |
+|---|---|---|---|
+| Bad deploy | 4/4 | 4/4 | 4/4 |
+| Malformed job input | 3/3 | 3/3 | 3/3 |
+| DB connection-pool exhaustion | 5/5 | 5/5 | 5/5 |
+| Timeout misconfiguration | 4/4 | 4/4 | 4/4 |
+| Service latency | 5/5 | **2/5** | 0/5 |
+| No fault (correctly cleared) | 3/3 | 3/3 | 3/3 |
+
+What the numbers say:
+
+- **Drill-down tools matter:** they lift the agent from 76% to 86% top-1, all of it on latency
+  faults (0/5 to 2/5). Without them the model guesses "pool exhaustion" or "slow query" for a
+  slow service.
+- **Latency faults are the agent's weak spot.** Every failure is a latency fault where it blamed a
+  neighbouring service or the wrong mechanism. Separating a slow service from slow callers needs
+  span-level reasoning that gpt-oss-20b only sometimes does.
+- **Citations are always grounded:** every evidence id the agent cited (92/92) exists in the
+  evidence it actually retrieved. Hallucinated evidence is checked mechanically, not trusted.
+- **The rules baseline is an upper bound, not a fair fight.** Its signature rules were written
+  for these five fault types and checked against these same scenarios. The agent has only a
+  general prompt. The interesting comparison is agent vs. agent-without-tools.
+
+Caveats: 21 faulted scenarios is a small sample (one miss moves top-1 by ~5 points). Prompts and
+the triage noise threshold were adjusted during development on this same scenario set; there is
+no held-out set yet. 3 of 24 bundles show weaker evidence than labelled (`scenarios.check`) and are
+kept.
+
+## How the investigator works
+
+1. **Triage** ([opspilot/analysis.py](opspilot/analysis.py)) compares every signal against the
+   first minute of the window and builds a briefing: anomalous signals with onset times and
+   severity (small blips are marked *minor*: the size of normal background noise), new error-log
+   patterns, deploys/config changes, and span latency/error shifts. Every item gets a stable
+   evidence id.
+2. **The agent** ([opspilot/agent.py](opspilot/agent.py)) reads the briefing and may call
+   read-only tools (`query_metric`, `search_logs`, `get_service_spans`) before calling
+   `submit_diagnosis` with up to three ranked hypotheses, each citing evidence ids. Every id a tool
+   returns enters an evidence ledger; citations are checked against it.
+3. **Token budget:** the triage-first design keeps an investigation to ~2.5k tokens, so the whole
+   evaluation fits in Groq's free tier.
+
+Try it on a recorded incident (needs `GROQ_API_KEY`; `--rules` needs nothing):
+
+```bash
+.venv/Scripts/python -m opspilot.investigate scenarios/bundles/f5-deploy-metadata-a --show-answer
+```
+
+Re-run the evaluation:
+
+```bash
+.venv/Scripts/python -m opspilot.evaluate --run final --model openai/gpt-oss-20b
+```
+
+## Scope
+
+Built: simulated platform and telemetry, fault injection and recording, triage, rules baseline,
+LLM agent with tools and citation checking, evaluation harness. From the original spec, not built:
+alerting/incident grouping, the web console, Slack integration, remediation approvals, and the
+robustness experiments (missing evidence, confounders, tool failures).
 
 ## Quickstart
 
@@ -75,8 +150,8 @@ the evidence it should leave behind. With the stack running:
 .venv/Scripts/python -m scenarios.check
 ```
 
-Each recording resets the platform, waits out a 3-minute cooldown, then records 3 min of baseline,
-5 min of fault and 2 min of recovery, and exports the window to `scenarios/bundles/<id>/` as Parquet
+Each recording resets the platform, waits out a cooldown, then records 90 s of baseline and 150 s
+of fault (definitions are generated by `python -m scenarios.generate`), and exports the window to `scenarios/bundles/<id>/` as Parquet
 (metrics, logs, spans, change events) plus a manifest. `scenarios.check` confirms every bundle shows the
 key evidence its label claims. The leak test (`tests/test_leaks.py`) confirms no recorded string reveals
 that a fault was injected.
@@ -97,7 +172,8 @@ restarts, and logs each one as a change event in `var/telemetry/changes.jsonl`.
 ```
 sim/        simulated services, telemetry, faults (chaos.py), control plane, supervisor (run.py), M1 checks
 scenarios/  scenario definitions, recorder, bundle checks
-opspilot/   OpsPilot itself; so far the telemetry store over bundles (store/)
+opspilot/   triage, rules baseline, agent, evaluation, demo CLI; store/ reads bundles
+results/    evaluation output
 configs/    Collector and Prometheus configuration
 scripts/    fetch_tools.py
 tests/      unit tests (pytest)

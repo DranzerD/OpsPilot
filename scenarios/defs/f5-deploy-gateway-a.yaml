@@ -1,0 +1,24 @@
+id: f5-deploy-gateway-a
+fault:
+  fault_type: bad_deploy_errors
+  target: gateway
+  intensity: 0.3
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 18
+label:
+  root_cause:
+    service: gateway
+    fault_type: bad_deploy_errors
+  key_evidence:
+  - kind: change
+    service: gateway
+    change_kind: deploy
+  - kind: metric
+    service: gateway
+    signal: error_ratio
+  - kind: log
+    service: gateway
+    pattern: Unhandled error

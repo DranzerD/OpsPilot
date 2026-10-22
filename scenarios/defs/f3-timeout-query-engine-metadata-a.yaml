@@ -1,0 +1,26 @@
+id: f3-timeout-query-engine-metadata-a
+fault:
+  fault_type: upstream_timeout_misconfig
+  target: query-engine->metadata
+  intensity: 0.5
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 10
+label:
+  root_cause:
+    service: query-engine
+    fault_type: upstream_timeout_misconfig
+  key_evidence:
+  - kind: change
+    service: query-engine
+    change_kind: config
+  - kind: metric
+    service: query-engine
+    signal: dependency_error_ratio
+    labels:
+      peer_service: metadata
+  - kind: log
+    service: query-engine
+    pattern: Upstream metadata call .* exceeded deadline

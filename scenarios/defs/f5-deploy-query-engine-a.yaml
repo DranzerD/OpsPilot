@@ -1,0 +1,24 @@
+id: f5-deploy-query-engine-a
+fault:
+  fault_type: bad_deploy_errors
+  target: query-engine
+  intensity: 0.5
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 17
+label:
+  root_cause:
+    service: query-engine
+    fault_type: bad_deploy_errors
+  key_evidence:
+  - kind: change
+    service: query-engine
+    change_kind: deploy
+  - kind: metric
+    service: query-engine
+    signal: error_ratio
+  - kind: log
+    service: query-engine
+    pattern: Unhandled error

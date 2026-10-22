@@ -1,0 +1,24 @@
+id: f5-deploy-stream-processor-a
+fault:
+  fault_type: bad_deploy_errors
+  target: stream-processor
+  intensity: 0.5
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 20
+label:
+  root_cause:
+    service: stream-processor
+    fault_type: bad_deploy_errors
+  key_evidence:
+  - kind: change
+    service: stream-processor
+    change_kind: deploy
+  - kind: metric
+    service: stream-processor
+    signal: error_ratio
+  - kind: log
+    service: stream-processor
+    pattern: Unhandled error

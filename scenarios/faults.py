@@ -27,10 +27,13 @@ def _bump_patch(version: str) -> str:
 def apply(spec: FaultSpec, control: ControlClient) -> Revert:
     services = load_topology().services
 
+    if spec.fault_type == FaultType.NONE:
+        return lambda: None
+
     if spec.fault_type in IN_PROCESS_FAULTS:
         url = f"{services[spec.target].base_url}/chaos"
-        httpx.post(url, json=spec.model_dump(mode="json"), timeout=5).raise_for_status()
-        return lambda: httpx.delete(url, timeout=5).raise_for_status()
+        httpx.post(url, json=spec.model_dump(mode="json"), timeout=30).raise_for_status()
+        return lambda: httpx.delete(url, timeout=30).raise_for_status()
 
     if spec.fault_type == FaultType.UPSTREAM_TIMEOUT_MISCONFIG:
         caller, _, callee = spec.target.partition("->")
@@ -55,13 +58,13 @@ def reset(control: ControlClient) -> None:
     """Bring every service back to a clean baseline: no active faults, base versions, default config."""
     topo = load_topology()
     for svc in topo.services.values():
-        httpx.delete(f"{svc.base_url}/chaos", timeout=5).raise_for_status()
+        httpx.delete(f"{svc.base_url}/chaos", timeout=30).raise_for_status()
     releases = control.services()
     for name, release in releases.items():
         if release["feature_flags"] or release["version"] != BASE_VERSION:
             control.deploy(name, BASE_VERSION, {})
     for svc in topo.services.values():
-        current = httpx.get(f"{svc.base_url}/admin/config", timeout=5).json()
+        current = httpx.get(f"{svc.base_url}/admin/config", timeout=30).json()
         for dep in svc.calls:
             key = f"dependencies.{dep.name}.timeout_s"
             if key in current and current[key] != dep.timeout_s:

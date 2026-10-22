@@ -147,7 +147,8 @@ class Supervisor:
             env["FEATURE_FLAGS"] = json.dumps(feature_flags) if feature_flags else ""
         log_file = open(LOGS / f"{name}.log", "ab")  # noqa: SIM115 - closed when the process is replaced or stopped
         # Own process group, so Ctrl+C reaches only the supervisor, which then stops children in order.
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        # No console needed: a supervisor whose console has gone away can still spawn children.
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         proc = subprocess.Popen(
             comp.cmd, cwd=ROOT, env=env, stdout=log_file, stderr=subprocess.STDOUT, creationflags=flags
         )
