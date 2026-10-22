@@ -1,0 +1,16 @@
+id: f1-pool-exhaustion-query-engine-s1
+fault:
+  fault_type: db_pool_exhaustion
+  target: query-engine
+  intensity: 0.7          # one connection leaked every 25 s; 8-connection pool empty after ~200 s
+timeline: {baseline_s: 180, fault_s: 300, recovery_s: 120}
+seed: 1
+label:
+  root_cause: {service: query-engine, fault_type: db_pool_exhaustion}
+  key_evidence:
+    - {kind: metric, service: query-engine, signal: db_pool_utilization, direction: up}
+    - {kind: metric, service: query-engine, signal: db_pool_pending, direction: up}
+    - {kind: metric, service: query-engine, signal: db_pool_wait_p95, direction: up}
+    - {kind: metric, service: query-engine, signal: error_ratio, direction: up}
+    - {kind: metric, service: gateway, signal: dependency_error_ratio, labels: {peer_service: query-engine}, direction: up}
+    - {kind: log, service: query-engine, pattern: "Timed out acquiring connection from pool"}

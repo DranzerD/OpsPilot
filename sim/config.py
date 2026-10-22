@@ -16,11 +16,17 @@ TOOLS = ROOT / "tools"
 CONFIGS = ROOT / "configs"
 TOPOLOGY_PATH = Path(__file__).resolve().parent / "topology.yaml"
 
-VERSION = "0.1.0"
+BASE_VERSION = "0.1.0"
+VERSION = os.environ.get("SERVICE_VERSION", BASE_VERSION)
 HOST = "127.0.0.1"
 OTLP_ENDPOINT = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", f"http://{HOST}:4318")
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", f"http://{HOST}:9090")
 PLATFORM_DB_PATH = Path(os.environ.get("PLATFORM_DB_PATH", VAR / "platform.db"))
+TELEMETRY_DIR = VAR / "telemetry"
+# Deploys, config changes and restarts made through the control plane (sim/control.py).
+CHANGES_PATH = TELEMETRY_DIR / "changes.jsonl"
+CONTROL_PORT = 8090
+CONTROL_URL = f"http://{HOST}:{CONTROL_PORT}"
 
 
 @dataclass(frozen=True)

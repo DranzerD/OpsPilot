@@ -6,7 +6,7 @@ and a rules-based baseline.
 
 The full design is in [docs/SPEC.md](docs/SPEC.md).
 
-**Status:** M1 (simulated platform emits telemetry) is complete. Fault injection (M2) is next.
+**Status:** M1 (telemetry) and M2 (fault injection, scenario recorder, bundles) are complete. Incidents and the rules-based baseline (M3) are next.
 
 ## Quickstart
 
@@ -62,10 +62,42 @@ Metrics go to Prometheus (5 s scrape) with RED/saturation recording rules in
 OTLP JSON lines to `var/telemetry/` until the OpsPilot ingest API exists (M3). Logs carry trace
 and span IDs, and the database appears in traces as `peer.service=platform-db` client spans.
 
+## Fault scenarios
+
+Scenario definitions in [scenarios/defs/](scenarios/defs/) pair a fault with its ground-truth label and
+the evidence it should leave behind. With the stack running:
+
+```bash
+.venv/Scripts/python -m scenarios.record scenarios/defs/*.yaml
+```
+
+```bash
+.venv/Scripts/python -m scenarios.check
+```
+
+Each recording resets the platform, waits out a 3-minute cooldown, then records 3 min of baseline,
+5 min of fault and 2 min of recovery, and exports the window to `scenarios/bundles/<id>/` as Parquet
+(metrics, logs, spans, change events) plus a manifest. `scenarios.check` confirms every bundle shows the
+key evidence its label claims. The leak test (`tests/test_leaks.py`) confirms no recorded string reveals
+that a fault was injected.
+
+| Fault | How it's injected | What it looks like |
+|-------|-------------------|--------------------|
+| F1 pool exhaustion | `/chaos`: leaks one DB connection every N seconds | Pool usage climbs stepwise, then requests queue and time out |
+| F2 latency | `/chaos`: adds latency inside the server span | Slow service, slow callers, longer pipeline jobs |
+| F3 timeout misconfig | Control plane config change (ms written as s) | Config change event, caller timeouts, healthy callee |
+| F4 malformed input | `/chaos`: bad values in some datasets' source data | Schema-validation failures, job retries, partial pipeline runs |
+| F5 bad deploy | Control plane deploy of a release with a buggy feature-flagged path | Deploy event, then 500s on one code path |
+
+The control plane (`127.0.0.1:8090`, served by `sim.run`) performs deploys, config changes and
+restarts, and logs each one as a change event in `var/telemetry/changes.jsonl`.
+
 ## Layout
 
 ```
-sim/        simulated services, telemetry setup, process supervisor (run.py), M1 checks (verify.py)
+sim/        simulated services, telemetry, faults (chaos.py), control plane, supervisor (run.py), M1 checks
+scenarios/  scenario definitions, recorder, bundle checks
+opspilot/   OpsPilot itself; so far the telemetry store over bundles (store/)
 configs/    Collector and Prometheus configuration
 scripts/    fetch_tools.py
 tests/      unit tests (pytest)

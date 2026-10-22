@@ -9,10 +9,10 @@ from typing import Any, Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from sim import features
 from sim.app import Service
 from sim.config import ServiceConfig
 from sim.db import PlatformDB
-from sim.deps import DependencyClient
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +22,13 @@ QUERIES = {
     "count": "SELECT COUNT(*) AS n FROM records WHERE dataset = :dataset AND partition_key IN ({keys})",
     "aggregate": (
         "SELECT category, COUNT(*) AS n, AVG(value) AS mean, MAX(value) AS max FROM records "
+        "WHERE dataset = :dataset AND partition_key IN ({keys}) GROUP BY category ORDER BY category"
+    ),
+    # Next release: percentile column in aggregates. Written against the warehouse dialect;
+    # SQLite has no APPROX_PERCENTILE, so every query on this path fails.
+    "aggregate_vectorized": (
+        "SELECT category, COUNT(*) AS n, AVG(value) AS mean, MAX(value) AS max, "
+        "APPROX_PERCENTILE(value, 0.95) AS p95 FROM records "
         "WHERE dataset = :dataset AND partition_key IN ({keys}) GROUP BY category ORDER BY category"
     ),
     "scan": (
@@ -41,13 +48,10 @@ class QueryEngine(Service):
     def __init__(self, config: ServiceConfig) -> None:
         super().__init__(config)
         self.db = PlatformDB(config.name, pool_size=config.options["db_pool_size"])
-        self.metadata = DependencyClient(config, "metadata")
+        self.metadata = self.dependency("metadata")
 
     def setup(self, app: FastAPI) -> None:
         app.post("/query")(self.run_query)
-
-    def stop(self) -> None:
-        self.metadata.close()
 
     def run_query(self, q: QueryIn) -> dict[str, Any]:
         resp = self.metadata.request("GET", "/datasets/{name}", f"/datasets/{q.dataset}")
@@ -67,7 +71,10 @@ class QueryEngine(Service):
         params = {"dataset": q.dataset, **{f"k{i}": k for i, k in enumerate(keys)}}
         start = perf_counter()
         with self.db.connection() as conn:
-            rows = self.db.execute(conn, f"query {q.kind}", QUERIES[q.kind].format(keys=placeholders), params)
+            kind = q.kind
+            if kind == "aggregate" and features.enabled("vectorized_aggregate"):
+                kind = "aggregate_vectorized"
+            rows = self.db.execute(conn, f"query {q.kind}", QUERIES[kind].format(keys=placeholders), params)
         elapsed_ms = (perf_counter() - start) * 1000
         if elapsed_ms > SLOW_QUERY_MS:
             log.warning(

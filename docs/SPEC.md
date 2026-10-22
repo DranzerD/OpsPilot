@@ -1,6 +1,6 @@
 # OpsPilot — Technical Specification
 
-**Status:** Draft v0.2 · 2026-10-22 (v0.2: native processes, no Docker; SQLite platform-db)
+**Status:** Draft v0.3 · 2026-10-22 (v0.2: native processes, no Docker; SQLite platform-db. v0.3: fault injection and bundles as built in M2)
 **Owner:** Sarana Gnanojval
 **One-line summary:** A simulated multi-service data platform with real telemetry, a fault-injection harness, an incident pipeline, and an evidence-grounded AI investigation agent — measured against labelled incidents and simpler baselines.
 
@@ -92,6 +92,7 @@ These are the decisions that most shape the build. Each one has a short justific
 | `ops-db` | Decided at M3 (D11) | OpsPilot state (§4). |
 | `console/` | React, TypeScript, Vite, Plotly | Service health, incidents, investigation view, approvals, eval results. |
 | `slackbot/` | `slack_bolt` (Socket Mode) | Notifications, commands, approval buttons. |
+| Control plane (`sim/control.py`) | Python, served by the supervisor on :8090 | Deploys (restart a service at a version with feature flags), config changes, restarts. Every operation is appended to `var/telemetry/changes.jsonl` as a change event. |
 | `scenarios/` + `eval/` | Python CLI, DuckDB, Parquet | Scenario definitions, recorder, bundles, perturbations, eval runner, reports. |
 
 ### 2.2 Simulated platform
@@ -115,7 +116,12 @@ The dependency graph is declared once in `sim/topology.yaml` and loaded into `op
 
 ### 2.3 Fault injection
 
-Each sim service exposes `POST /chaos` (bound to 127.0.0.1 only) accepting a `FaultSpec`:
+Faults reach the platform two ways, matching how real incidents start:
+
+- **In-process faults** (F1 pool exhaustion, F2 latency, F4 malformed input, later F6–F11): each service exposes `POST/GET/DELETE /chaos` (bound to 127.0.0.1, excluded from instrumentation, silent by design).
+- **Operational faults** go through the control plane, so they leave exactly the change events a real change would. F3 is a config change on the caller (a timeout written in ms where seconds were meant). F5 is a deploy of the next release with a release feature flag rolled out to `intensity` of requests. Each service's next release ships one new code path with a real bug (an unsupported SQL function, a missing column, a `KeyError`), so a bad deploy fails through ordinary application code and error handling.
+
+`FaultSpec`:
 
 ```python
 class FaultSpec(BaseModel):
@@ -126,7 +132,7 @@ class FaultSpec(BaseModel):
     duration_s: int | None = None  # None = until DELETE /chaos
 ```
 
-Faults are implemented inside the service code paths they affect: pool size, sleep before dependency calls, raised exceptions, cache bypass, and so on. This is not network-level chaos.
+Faults are implemented inside the service code paths they affect: a connection leak that drains the pool, latency inside the server span, malformed records in a job's source data, a misconfigured timeout, a buggy release. This is not network-level chaos.
 
 **Hard rule: no label leakage.** Chaos hooks must never write log lines, span attributes, metric labels or HTTP headers that reveal a fault was injected (no `"chaos"`, `"injected"`, `"fault"`). The symptoms must be indistinguishable from a real failure. A CI test greps every recorded bundle for a denylist of leak tokens (§11.2). Without this test, every accuracy number in the project is suspect.
 
@@ -169,7 +175,7 @@ Head sampling at 100% in sim (volumes are small). Every inbound request and ever
 
 ### 3.4 Change events
 
-Deploys and config changes are first-class evidence, because in real systems a large share of incidents follow a change. The sim emits them via `POST /api/v1/changes` on OpsPilot when a scenario performs a version bump or config change, including **decoy** changes that have nothing to do with the fault (§7.2, E3).
+Deploys and config changes are first-class evidence, because in real systems a large share of incidents follow a change. The control plane writes them to `var/telemetry/changes.jsonl` whenever anything is deployed, reconfigured or restarted (from M3 they are also posted to OpsPilot's `POST /api/v1/changes`). Change events record what changed, never why. **Decoy** changes that have nothing to do with the fault (§7.2, E3) are added to scenario definitions in M5.
 
 ---
 
@@ -324,8 +330,6 @@ fault:
   params: { jitter_ms: 150 }
 timeline: { baseline_s: 180, fault_s: 300, recovery_s: 120 }
 seed: 3
-workload: { profile: mixed, interactive_rps: 20, batch_every_s: 120 }
-decoys: []                  # optional: decoy deploys/config changes, unrelated spikes
 label:
   root_cause: { service: metadata, fault_type: dependency_latency }
   acceptable_alternates: []  # rarely used; e.g. pool exhaustion caused by slow queries
@@ -336,6 +340,8 @@ label:
     - { kind: log, service: query-engine, pattern: "(deadline|timed out).*metadata" }
 ```
 
+Selector kinds: `metric` (a signal from `opspilot/store/signals.py`, optional extra `labels`), `log` (regex over the message), `trace` (`span_duration` or `span_errors` for a service's SERVER spans) and `change` (`deploy`/`config`/`restart`). Decoys (E3) and per-scenario workload settings are added when the experiments that need them are built.
+
 Target dataset: **11 fault types × 2–3 targets/intensities × 3 seeds ≈ 60–80 base scenarios**, plus perturbation variants generated from them (§7.2).
 
 **Split.** Base scenarios are split by `(fault_type, seed)`: seeds 1–2 → `dev`, seed 3 → `test`. F9–F11 go to `heldout` only. `test` and `heldout` results are run **once per frozen agent version** and are never used to tune anything. Keep a `CHANGELOG` of when each split was run.
@@ -344,18 +350,21 @@ Target dataset: **11 fault types × 2–3 targets/intensities × 3 seeds ≈ 60�
 
 ```
 scenarios/bundles/<scenario_id>/
-  manifest.json      # scenario def, label, time window, git sha, sim versions, checksums
-  metrics.parquet    # (ts, series, labels..., value) — range-exported from Prometheus at 5s step
-  logs.parquet
-  spans.parquet
-  alerts.parquet
-  changes.parquet
-  topology.json
+  manifest.json      # scenario def, label, window (start, fault_start, fault_end, end), git sha, checksums
+  metrics.parquet    # (ts, metric, labels JSON, value): every platform series and recording rule, 5 s step
+  logs.parquet       # (ts, service, severity, message, trace_id, span_id, attrs JSON)
+  spans.parquet      # (trace_id, span_id, parent, service, name, kind, start/end, duration_ms, is_error, peer_service, attrs)
+  changes.parquet    # (id, ts, service, kind, summary, details JSON)
+  topology.json      # declared services, dependencies, timeouts
 ```
 
-The label is stored in `manifest.json` but `BundleStore` **never exposes it** to tools. A unit test asserts that no tool response contains manifest fields.
+`alerts.parquet` joins the format in M3, when alerting exists; bundles are re-recorded then (definitions are the source of truth, and recording is unattended).
 
-Bundles are generated artifacts. Commit the scenario definitions; store bundles under Git LFS, or rebuild them with `make scenarios`. Expect a few MB per bundle.
+The label and fault window are stored in `manifest.json`, but `BundleStore` **never exposes them**: tools only see the overall window. Evaluation code reads them through `load_ground_truth`. Tests assert that no store output contains the scenario id or fault boundaries, and that no recorded string matches the leak denylist.
+
+`python -m scenarios.check` verifies each bundle against its own `key_evidence`: every selector must show a real shift between the baseline and fault windows. A bundle that fails is mislabelled or under-powered and is not used for evaluation.
+
+Bundles are generated artifacts and are gitignored. Commit the scenario definitions and rebuild bundles with `python -m scenarios.record scenarios/defs/*.yaml` (about 13 minutes per scenario, including a 3-minute unrecorded cooldown). Expect a few MB per bundle.
 
 ---
 
@@ -633,8 +642,8 @@ Roughly 10 weeks. Each milestone ends with something you can demo, and its accep
 - ✅ Accept: `python -m sim.verify` passes — RED series for every service, healthy recording rules, a single trace spanning gateway → query-engine → metadata → platform-db, and logs whose trace IDs resolve to exported traces.
 
 **M2 — Fault injection + scenario recorder (week 2)**
-- `/chaos` implemented for F1–F5; `scenarios record <def>` produces a bundle; `BundleStore` reads it.
-- ✅ Accept: 5 scenario definitions recorded; leak test passes; for each, the injected fault is visible in the expected metrics when plotted.
+- In-process faults (F1, F2, F4) via `/chaos`; operational faults (F3, F5) via the control plane; `python -m scenarios.record` produces a bundle; `BundleStore` reads it.
+- ✅ Accept: 5 scenario definitions recorded; leak test passes; `python -m scenarios.check` shows every key-evidence selector visible in every bundle.
 
 **M3 — Incidents + B0 + eval harness (weeks 3–4)**
 - Alert rules, Alertmanager webhook, grouping, anomaly detection, B0.

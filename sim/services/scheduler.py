@@ -17,7 +17,7 @@ from opentelemetry.trace import Status, StatusCode
 from sim.app import Service
 from sim.config import ServiceConfig, load_topology
 from sim.db import partition_key
-from sim.deps import DependencyClient, DependencyError
+from sim.deps import DependencyError
 from sim.telemetry import JOB_BUCKETS_S
 
 log = logging.getLogger(__name__)
@@ -36,8 +36,8 @@ class Scheduler(Service):
         self.rows_per_job = workload.get("rows_per_job", 200)
         self.max_retries = config.options.get("max_retries", 3)
         self.concurrency = config.options.get("job_concurrency", 4)
-        self.stream = DependencyClient(config, "stream-processor")
-        self.metadata = DependencyClient(config, "metadata")
+        self.stream = self.dependency("stream-processor")
+        self.metadata = self.dependency("metadata")
 
         self._stop = threading.Event()
         self._running = threading.Lock()
@@ -65,8 +65,7 @@ class Scheduler(Service):
 
     def stop(self) -> None:
         self._stop.set()
-        self.stream.close()
-        self.metadata.close()
+        super().stop()
 
     def trigger(self) -> dict[str, str]:
         if self._running.locked():

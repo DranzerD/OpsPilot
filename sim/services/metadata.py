@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException
 from opentelemetry import metrics
 from pydantic import BaseModel, Field
 
+from sim import features
 from sim.app import Service
 from sim.config import ServiceConfig
 from sim.db import PlatformDB
@@ -94,6 +95,16 @@ class Metadata(Service):
 
     def list_partitions(self, name: str, limit: int = 10) -> list[dict[str, Any]]:
         with self.db.connection() as conn:
+            if features.enabled("partition_stats"):
+                # Next release: per-partition size stats. The partitions table has no
+                # size_bytes column, so this query fails.
+                return self.db.execute(
+                    conn,
+                    "SELECT partitions",
+                    "SELECT partition_key, row_count, size_bytes, created_at FROM partitions "
+                    "WHERE dataset = :name ORDER BY partition_key DESC LIMIT :limit",
+                    {"name": name, "limit": min(limit, 100)},
+                )
             return self.db.execute(
                 conn,
                 "SELECT partitions",

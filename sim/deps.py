@@ -26,12 +26,20 @@ _tracer = trace.get_tracer("sim.deps")
 class DependencyError(Exception):
     """A dependency call failed: timeout, connection error, or a 5xx response."""
 
-    def __init__(self, peer: str, route: str, reason: str, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        peer: str,
+        route: str,
+        reason: str,
+        status_code: int | None = None,
+        timeout_s: float | None = None,
+    ) -> None:
         super().__init__(f"{peer} {route}: {reason}")
         self.peer = peer
         self.route = route
         self.reason = reason
         self.status_code = status_code
+        self.timeout_s = timeout_s
 
     @property
     def is_timeout(self) -> bool:
@@ -72,7 +80,7 @@ class DependencyClient:
                 outcome["error.type"] = "timeout"
                 span.record_exception(exc)
                 span.set_status(Status(StatusCode.ERROR, "timeout"))
-                raise DependencyError(self.peer, route, "timeout") from exc
+                raise DependencyError(self.peer, route, "timeout", timeout_s=self.timeout_s) from exc
             except httpx.TransportError as exc:
                 outcome["error.type"] = "connection_error"
                 span.record_exception(exc)
@@ -89,6 +97,10 @@ class DependencyClient:
                 span.set_status(Status(StatusCode.ERROR, f"HTTP {resp.status_code}"))
                 raise DependencyError(self.peer, route, f"HTTP {resp.status_code}", resp.status_code)
             return resp
+
+    def set_timeout(self, timeout_s: float) -> None:
+        self.timeout_s = timeout_s
+        self._client.timeout = httpx.Timeout(timeout_s)
 
     def close(self) -> None:
         self._client.close()

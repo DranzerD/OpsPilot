@@ -6,26 +6,22 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
+from sim import features
 from sim.app import Service
 from sim.config import ServiceConfig
-from sim.deps import DependencyClient
 from sim.services.query_engine import QueryIn
 
 
 class Gateway(Service):
     def __init__(self, config: ServiceConfig) -> None:
         super().__init__(config)
-        self.metadata = DependencyClient(config, "metadata")
-        self.query_engine = DependencyClient(config, "query-engine")
+        self.metadata = self.dependency("metadata")
+        self.query_engine = self.dependency("query-engine")
 
     def setup(self, app: FastAPI) -> None:
         app.get("/api/datasets")(self.list_datasets)
         app.get("/api/datasets/{name}")(self.get_dataset)
         app.post("/api/query")(self.query)
-
-    def stop(self) -> None:
-        self.metadata.close()
-        self.query_engine.close()
 
     def list_datasets(self) -> list[dict[str, Any]]:
         return self.metadata.request("GET", "/datasets").json()
@@ -42,4 +38,9 @@ class Gateway(Service):
         resp = self.query_engine.request("POST", "/query", json=q.model_dump())
         if resp.status_code >= 400:
             raise HTTPException(resp.status_code, resp.json().get("detail", "query failed"))
-        return resp.json()
+        result = resp.json()
+        if features.enabled("response_enrichment"):
+            # Next release: surface scan statistics to clients. query-engine doesn't return
+            # "stats", so this raises KeyError.
+            result["rows_scanned"] = result["stats"]["rows_scanned"]
+        return result

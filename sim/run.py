@@ -4,7 +4,8 @@
     python -m sim.run down           stop a stack started elsewhere (uses var/run.json)
     python -m sim.run status         show which components are running
 
-Each component's stdout/stderr goes to var/logs/<name>.log.
+Each component's stdout/stderr goes to var/logs/<name>.log. The supervisor also serves the
+control plane (sim/control.py) on 127.0.0.1:8090 for deploys, config changes and restarts.
 """
 
 from __future__ import annotations
@@ -16,13 +17,27 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
-from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import IO, Any
 
 import httpx
 
-from sim.config import CONFIGS, HOST, PLATFORM_DB_PATH, PROMETHEUS_URL, ROOT, TOOLS, VAR, load_topology
+from sim.config import (
+    BASE_VERSION,
+    CONFIGS,
+    CONTROL_URL,
+    HOST,
+    PLATFORM_DB_PATH,
+    PROMETHEUS_URL,
+    ROOT,
+    TELEMETRY_DIR,
+    TOOLS,
+    VAR,
+    load_topology,
+)
+from sim.control import ControlPlane, serve
 from sim.db import init_platform_db
 
 LOGS = VAR / "logs"
@@ -36,6 +51,15 @@ class Component:
     cmd: list[str]
     ready_port: int | None = None
     ready_url: str | None = None
+    deployable: bool = False
+
+
+@dataclass
+class Running:
+    proc: subprocess.Popen
+    log_file: IO[bytes]
+    version: str = BASE_VERSION
+    feature_flags: dict[str, float] = field(default_factory=dict)
 
 
 def components() -> list[Component]:
@@ -62,7 +86,12 @@ def components() -> list[Component]:
     ]
     for svc in topo.services.values():
         stack.append(
-            Component(svc.name, [python, "-m", "sim.serve", svc.name], ready_url=f"{svc.base_url}/healthz")
+            Component(
+                svc.name,
+                [python, "-m", "sim.serve", svc.name],
+                ready_url=f"{svc.base_url}/healthz",
+                deployable=True,
+            )
         )
     stack.append(Component("workload", [python, "-m", "sim.workload"]))
     return stack
@@ -93,70 +122,123 @@ def _wait_ready(comp: Component, proc: subprocess.Popen) -> None:
     raise RuntimeError(f"{comp.name} not ready after {STARTUP_TIMEOUT_S}s; see {LOGS / comp.name}.log")
 
 
+def _terminate(proc: subprocess.Popen) -> None:
+    if proc.poll() is None:
+        proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
+class Supervisor:
+    def __init__(self) -> None:
+        self.components = {c.name: c for c in components()}
+        self.running: dict[str, Running] = {}
+        self.exited: set[str] = set()
+        self._lock = threading.RLock()
+        self._env = {**os.environ, "PYTHONUNBUFFERED": "1", "OTEL_SEMCONV_STABILITY_OPT_IN": "http"}
+
+    def _spawn(self, name: str, version: str, feature_flags: dict[str, float]) -> None:
+        comp = self.components[name]
+        env = dict(self._env)
+        if comp.deployable:
+            env["SERVICE_VERSION"] = version
+            env["FEATURE_FLAGS"] = json.dumps(feature_flags) if feature_flags else ""
+        log_file = open(LOGS / f"{name}.log", "ab")  # noqa: SIM115 - closed when the process is replaced or stopped
+        # Own process group, so Ctrl+C reaches only the supervisor, which then stops children in order.
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        proc = subprocess.Popen(
+            comp.cmd, cwd=ROOT, env=env, stdout=log_file, stderr=subprocess.STDOUT, creationflags=flags
+        )
+        self.running[name] = Running(proc, log_file, version, dict(feature_flags))
+        _wait_ready(comp, proc)
+
+    def start_all(self) -> None:
+        for name in self.components:
+            self._spawn(name, BASE_VERSION, {})
+            print(f"  {name:<17} up (pid {self.running[name].proc.pid})", flush=True)
+        self.write_run_file()
+
+    def release(self, name: str) -> dict[str, Any]:
+        with self._lock:
+            r = self.running[name]
+            return {"version": r.version, "feature_flags": dict(r.feature_flags), "pid": r.proc.pid}
+
+    def describe_services(self) -> dict[str, Any]:
+        with self._lock:
+            return {name: self.release(name) for name, c in self.components.items() if c.deployable}
+
+    def redeploy(self, name: str, version: str, feature_flags: dict[str, float]) -> None:
+        """Replace a running service process with one at `version` / `feature_flags`."""
+        with self._lock:
+            old = self.running[name]
+            _terminate(old.proc)
+            old.log_file.close()
+            self._spawn(name, version, feature_flags)
+            self.exited.discard(name)
+            self.write_run_file()
+        print(f"  {name:<17} redeployed {version} (pid {self.running[name].proc.pid})", flush=True)
+
+    def write_run_file(self) -> None:
+        pids = {"supervisor": os.getpid(), **{n: r.proc.pid for n, r in self.running.items()}}
+        RUN_FILE.write_text(json.dumps(pids, indent=2))
+
+    def check_exits(self) -> None:
+        with self._lock:
+            for name, r in self.running.items():
+                if r.proc.poll() is not None and name not in self.exited:
+                    # Not restarted: a crashed service is a signal worth seeing, not hiding.
+                    print(f"  {name} exited with code {r.proc.returncode}", flush=True)
+                    self.exited.add(name)
+
+    def stop_all(self) -> None:
+        with self._lock:
+            for r in reversed(list(self.running.values())):
+                if r.proc.poll() is None:
+                    r.proc.terminate()
+            for r in reversed(list(self.running.values())):
+                _terminate(r.proc)
+                r.log_file.close()
+            RUN_FILE.unlink(missing_ok=True)
+
+
 def _check_tools() -> None:
     missing = [p.name for p in (TOOLS / "otelcol-contrib.exe", TOOLS / "prometheus.exe") if not p.exists()]
     if missing:
         sys.exit(f"missing {', '.join(missing)}; run: python scripts/fetch_tools.py")
 
 
-def _stop(procs: list[tuple[Component, subprocess.Popen]]) -> None:
-    for _, proc in reversed(procs):
-        if proc.poll() is None:
-            proc.terminate()
-    for _, proc in reversed(procs):
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-    RUN_FILE.unlink(missing_ok=True)
-
-
 def up(reset: bool) -> int:
     _check_tools()
     if RUN_FILE.exists() and _alive(json.loads(RUN_FILE.read_text())):
         sys.exit("stack already running; use `python -m sim.run down` first")
-    for d in (LOGS, VAR / "telemetry", VAR / "prometheus"):
+    for d in (LOGS, TELEMETRY_DIR, VAR / "prometheus"):
         d.mkdir(parents=True, exist_ok=True)
     init_platform_db(PLATFORM_DB_PATH, reset=reset)
 
-    env = {**os.environ, "PYTHONUNBUFFERED": "1", "OTEL_SEMCONV_STABILITY_OPT_IN": "http"}
-    # Own process group, so Ctrl+C reaches only the supervisor, which then stops children in order.
-    flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-    procs: list[tuple[Component, subprocess.Popen]] = []
-    exited: set[str] = set()
-    with ExitStack() as log_files:
-        try:
-            for comp in components():
-                log_file = log_files.enter_context(open(LOGS / f"{comp.name}.log", "ab"))
-                proc = subprocess.Popen(
-                    comp.cmd,
-                    cwd=ROOT,
-                    env=env,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    creationflags=flags,
-                )
-                procs.append((comp, proc))
-                _wait_ready(comp, proc)
-                print(f"  {comp.name:<17} up (pid {proc.pid})", flush=True)
-            pids = {"supervisor": os.getpid(), **{c.name: p.pid for c, p in procs}}
-            RUN_FILE.write_text(json.dumps(pids, indent=2))
-            print(f"stack up. Prometheus: {PROMETHEUS_URL}  logs: {LOGS}  Ctrl+C to stop", flush=True)
-
-            while True:
-                time.sleep(2)
-                for comp, proc in procs:
-                    if proc.poll() is not None and comp.name not in exited:
-                        # Not restarted: a crashed service is a signal worth seeing, not hiding.
-                        print(f"  {comp.name} exited with code {proc.returncode}", flush=True)
-                        exited.add(comp.name)
-        except KeyboardInterrupt:
-            print("stopping...", flush=True)
-        except RuntimeError as exc:
-            print(f"startup failed: {exc}", file=sys.stderr, flush=True)
-            _stop(procs)
-            return 1
-        _stop(procs)
+    supervisor = Supervisor()
+    server = None
+    try:
+        supervisor.start_all()
+        server = serve(ControlPlane(supervisor))
+        print(
+            f"stack up. Prometheus: {PROMETHEUS_URL}  control: {CONTROL_URL}  logs: {LOGS}  Ctrl+C to stop",
+            flush=True,
+        )
+        while True:
+            time.sleep(2)
+            supervisor.check_exits()
+    except KeyboardInterrupt:
+        print("stopping...", flush=True)
+    except RuntimeError as exc:
+        print(f"startup failed: {exc}", file=sys.stderr, flush=True)
+        supervisor.stop_all()
+        return 1
+    finally:
+        if server is not None:
+            server.shutdown()
+    supervisor.stop_all()
     return 0
 
 

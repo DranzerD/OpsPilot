@@ -10,20 +10,52 @@ from collections.abc import Iterator
 from time import perf_counter
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from opentelemetry import metrics
 from opentelemetry.metrics import CallbackOptions, Observation
 from pydantic import BaseModel, Field
 
+from sim import features
 from sim.app import Service
+from sim.chaos import FaultType, affected_datasets, faults
 from sim.config import ServiceConfig
-from sim.db import PlatformDB, make_rows
-from sim.deps import DependencyClient
+from sim.db import CATEGORIES, DATASETS, PlatformDB, make_rows
 
 log = logging.getLogger(__name__)
 
 BATCH_SIZE = 50
 BATCH_PROCESSING_S = 0.02
+MALFORMED_VALUES = ["N/A", "", "null", "#VALUE!", "1,024.5"]
+
+INSERT_RECORDS = (
+    "INSERT INTO records (dataset, partition_key, ts, category, value) "
+    "VALUES (:dataset, :partition_key, :ts, :category, :value)"
+)
+# Next release: bulk insert written against the new schema draft, which renames "value" to
+# "val". The current table has no such column.
+INSERT_RECORDS_BULK = (
+    "INSERT INTO records (dataset, partition_key, ts, category, val) "
+    "VALUES (:dataset, :partition_key, :ts, :category, :value)"
+)
+
+
+class RecordValidationError(Exception):
+    def __init__(self, dataset: str, partition_key: str, offset: int, column: str, value: Any) -> None:
+        super().__init__(f"record {offset}: column '{column}' rejected value {value!r}")
+        self.dataset = dataset
+        self.partition_key = partition_key
+        self.offset = offset
+        self.column = column
+        self.value = value
+
+
+def validate_records(rows: list[dict[str, Any]], dataset: str, partition_key: str, first_offset: int) -> None:
+    for i, row in enumerate(rows):
+        if not isinstance(row["value"], int | float):
+            raise RecordValidationError(dataset, partition_key, first_offset + i, "value", row["value"])
+        if row["category"] not in CATEGORIES:
+            raise RecordValidationError(dataset, partition_key, first_offset + i, "category", row["category"])
 
 
 class JobIn(BaseModel):
@@ -37,7 +69,7 @@ class StreamProcessor(Service):
     def __init__(self, config: ServiceConfig) -> None:
         super().__init__(config)
         self.db = PlatformDB(config.name, pool_size=config.options["db_pool_size"])
-        self.metadata = DependencyClient(config, "metadata")
+        self.metadata = self.dependency("metadata")
         self.retained = config.options.get("partitions_retained", 24)
         self._backlog = 0
         self._backlog_lock = threading.Lock()
@@ -61,8 +93,38 @@ class StreamProcessor(Service):
     def setup(self, app: FastAPI) -> None:
         app.post("/jobs/run")(self.run_job)
 
-    def stop(self) -> None:
-        self.metadata.close()
+        @app.exception_handler(RecordValidationError)
+        async def on_invalid_record(request: Request, exc: RecordValidationError) -> JSONResponse:
+            log.error(
+                "Schema validation failed for dataset=%s partition=%s: column '%s' expected %s, "
+                "got %r at record %d",
+                exc.dataset,
+                exc.partition_key,
+                exc.column,
+                "DOUBLE" if exc.column == "value" else "CATEGORY",
+                exc.value,
+                exc.offset,
+                extra={
+                    "dataset": exc.dataset,
+                    "partition_key": exc.partition_key,
+                    "record_offset": exc.offset,
+                },
+            )
+            return JSONResponse({"error": "job failed: schema validation"}, status_code=500)
+
+    def _read_source(self, job: JobIn, rng: random.Random) -> list[list[dict[str, Any]]]:
+        """Read the job's input from the upstream source, in batches."""
+        batches = []
+        remaining = job.rows
+        while remaining > 0:
+            n = min(BATCH_SIZE, remaining)
+            batches.append(make_rows(job.dataset, job.partition_key, n, rng))
+            remaining -= n
+        spec = faults.get(FaultType.BAD_INPUT_JOB_FAILURE)
+        if spec is not None and job.dataset in affected_datasets(spec, list(DATASETS)):
+            batch = batches[rng.randrange(len(batches))]
+            batch[rng.randrange(len(batch))]["value"] = rng.choice(MALFORMED_VALUES)
+        return batches
 
     def run_job(self, job: JobIn) -> dict[str, Any]:
         start = perf_counter()
@@ -74,24 +136,19 @@ class StreamProcessor(Service):
             raise HTTPException(404, f"unknown dataset {job.dataset}")
 
         rng = random.Random(job.job_id)
+        batches = self._read_source(job, rng)
+        insert = INSERT_RECORDS_BULK if features.enabled("bulk_writer") else INSERT_RECORDS
         remaining = job.rows
         self._add_backlog(remaining)
         try:
-            while remaining > 0:
-                n = min(BATCH_SIZE, remaining)
-                rows = make_rows(job.dataset, job.partition_key, n, rng)
+            for rows in batches:
+                validate_records(rows, job.dataset, job.partition_key, job.rows - remaining)
                 with self.db.connection() as conn:
-                    self.db.execute(
-                        conn,
-                        "INSERT records",
-                        "INSERT INTO records (dataset, partition_key, ts, category, value) "
-                        "VALUES (:dataset, :partition_key, :ts, :category, :value)",
-                        rows,
-                    )
+                    self.db.execute(conn, "INSERT records", insert, rows)
                     conn.commit()
-                self._processed.add(n, {"dataset": job.dataset})
-                self._add_backlog(-n)
-                remaining -= n
+                self._processed.add(len(rows), {"dataset": job.dataset})
+                self._add_backlog(-len(rows))
+                remaining -= len(rows)
                 time.sleep(BATCH_PROCESSING_S)
         finally:
             self._add_backlog(-remaining)

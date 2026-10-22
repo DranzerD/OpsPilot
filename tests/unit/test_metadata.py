@@ -10,7 +10,7 @@ from sim.db import DATASETS, init_platform_db
 
 @pytest.fixture(scope="module")
 def client():
-    init_platform_db(Path(os.environ["PLATFORM_DB_PATH"]), reset=True)
+    init_platform_db(Path(os.environ["PLATFORM_DB_PATH"]))
     with TestClient(create_app("metadata", export_telemetry=False)) as c:
         yield c
 
