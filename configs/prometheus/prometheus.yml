@@ -1,0 +1,25 @@
+# Prometheus, run natively by `python -m sim.run up`. 5s resolution so 10-minute fault
+# scenarios still produce realistic alert sequences (spec §2.2).
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+rule_files:
+  - rules/*.yml
+
+scrape_configs:
+  # Application metrics, re-exported by the Collector. honor_labels keeps the per-service
+  # job/instance labels the Collector derives from service.name.
+  - job_name: otelcol-exported
+    honor_labels: true
+    static_configs:
+      - targets: ["127.0.0.1:8889"]
+
+  - job_name: otelcol
+    static_configs:
+      - targets: ["127.0.0.1:8888"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:9090"]

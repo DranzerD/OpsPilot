@@ -1,0 +1,89 @@
+# Recording rules for RED (rate, errors, duration) and saturation signals (spec §3.1).
+# Aggregated by service_name, so series survive process restarts (instance changes).
+#
+# Ratios use `X or (Y * 0)` so a healthy service reports 0 instead of having no series.
+
+groups:
+  - name: red
+    rules:
+      - record: service:request_rate:1m
+        expr: sum by (service_name) (rate(http_server_request_duration_seconds_count[1m]))
+
+      - record: service:error_ratio:1m
+        expr: |
+          (
+            sum by (service_name) (rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[1m]))
+            or sum by (service_name) (rate(http_server_request_duration_seconds_count[1m])) * 0
+          )
+          / sum by (service_name) (rate(http_server_request_duration_seconds_count[1m]))
+
+      - record: service:latency_p95:1m
+        expr: histogram_quantile(0.95, sum by (service_name, le) (rate(http_server_request_duration_seconds_bucket[1m])))
+
+      - record: service:availability:5m
+        expr: |
+          1 - (
+            (
+              sum by (service_name) (rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]))
+              or sum by (service_name) (rate(http_server_request_duration_seconds_count[5m])) * 0
+            )
+            / sum by (service_name) (rate(http_server_request_duration_seconds_count[5m]))
+          )
+
+  - name: dependencies
+    rules:
+      - record: service:dependency_latency_p95:1m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (service_name, peer_service, le) (rate(http_client_request_duration_seconds_bucket[1m])))
+
+      - record: service:dependency_error_ratio:1m
+        expr: |
+          (
+            sum by (service_name, peer_service) (
+              rate(http_client_request_duration_seconds_count{error_type=~".+"}[1m])
+              or rate(http_client_request_duration_seconds_count{http_response_status_code=~"5.."}[1m])
+            )
+            or sum by (service_name, peer_service) (rate(http_client_request_duration_seconds_count[1m])) * 0
+          )
+          / sum by (service_name, peer_service) (rate(http_client_request_duration_seconds_count[1m]))
+
+  - name: database
+    rules:
+      - record: service:db_pool_wait_p95:1m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (service_name, le) (rate(db_client_connection_wait_time_seconds_bucket[1m])))
+
+      - record: service:db_pool_utilization
+        expr: |
+          sum by (service_name) (db_client_connection_count{state="used"})
+          / sum by (service_name) (db_client_connection_count)
+
+      - record: service:db_operation_p95:1m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (service_name, db_operation_name, le) (rate(db_client_operation_duration_seconds_bucket[1m])))
+
+  - name: jobs
+    rules:
+      - record: job:duration_p95:5m
+        expr: histogram_quantile(0.95, sum by (job_name, le) (rate(job_duration_seconds_bucket[5m])))
+
+      - record: job:failure_ratio:5m
+        expr: |
+          (
+            sum by (job_name) (increase(job_runs_total{outcome!="success"}[5m]))
+            or sum by (job_name) (increase(job_runs_total[5m])) * 0
+          )
+          / sum by (job_name) (increase(job_runs_total[5m]))
+
+      - record: job:retries:5m
+        expr: sum by (job_name) (increase(job_retries_total[5m]))
+
+  - name: cache
+    rules:
+      - record: service:cache_hit_ratio:1m
+        expr: |
+          sum by (service_name) (rate(cache_requests_total{result="hit"}[1m]))
+          / sum by (service_name) (rate(cache_requests_total[1m]))

@@ -1,0 +1,62 @@
+# Declared topology of the simulated data platform. Single source of truth for ports,
+# dependencies, dependency timeouts and DB pool sizes. Loaded by sim.config.
+
+services:
+  gateway:
+    port: 8001
+    tier: edge
+    description: Public API for interactive queries
+    calls:
+      query-engine: {timeout_s: 5.0}
+      metadata: {timeout_s: 2.0}
+
+  query-engine:
+    port: 8002
+    tier: core
+    description: Plans and executes queries over datasets
+    db_pool_size: 8
+    calls:
+      metadata: {timeout_s: 2.0}
+      platform-db: {}
+
+  metadata:
+    port: 8003
+    tier: core
+    description: Dataset catalog, schemas and partitions, with an in-process cache
+    db_pool_size: 5
+    cache_ttl_s: 10
+    calls:
+      platform-db: {}
+
+  scheduler:
+    port: 8004
+    tier: batch
+    description: Triggers the nightly ingest pipeline and retries failed jobs
+    max_retries: 3
+    job_concurrency: 4
+    calls:
+      stream-processor: {timeout_s: 30.0}
+      metadata: {timeout_s: 2.0}
+
+  stream-processor:
+    port: 8005
+    tier: batch
+    description: Runs ingest jobs that write dataset partitions
+    db_pool_size: 4
+    partitions_retained: 24
+    calls:
+      metadata: {timeout_s: 2.0}
+      platform-db: {}
+
+  platform-db:
+    kind: database
+    engine: sqlite
+    description: Platform database shared by query-engine, metadata and stream-processor
+
+workload:
+  seed: 1
+  interactive_rps: 20
+  # The "nightly" pipeline runs on a compressed clock (spec §2.2).
+  batch_every_s: 120
+  first_batch_after_s: 15
+  rows_per_job: 2000

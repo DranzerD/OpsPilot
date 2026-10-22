@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Native binaries fetched by scripts/fetch_tools.py
+tools/
+
+# Runtime state: SQLite DB, Prometheus TSDB, telemetry files, process logs
+var/
+
+# Generated scenario bundles (rebuilt with the recorder)
+scenarios/bundles/
