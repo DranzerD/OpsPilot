@@ -1,0 +1,126 @@
+[
+ {
+  "role": "system",
+  "content": "You are an SRE investigating an incident on a data platform. Find the root cause: the single service whose own fault started the problem, and what kind of fault it is.\n\nPlatform services and dependencies (caller -> callees):\n- gateway (Public API for interactive queries) -> query-engine, metadata\n- query-engine (Plans and executes queries over datasets) -> metadata, platform-db\n- metadata (Dataset catalog, schemas and partitions, with an in-process cache) -> platform-db\n- scheduler (Triggers the nightly ingest pipeline and retries failed jobs) -> stream-processor, metadata\n- stream-processor (Runs ingest jobs that write dataset partitions) -> metadata, platform-db\n\nFault types:\n- db_pool_exhaustion: the service's database connection pool is exhausted (e.g. leaked connections)\n- dependency_latency: the service itself became slow, slowing everything that calls it\n- upstream_timeout_misconfig: the service's timeout for calls to a dependency is misconfigured too low\n- bad_input_job_failure: batch jobs fail on malformed/invalid input data\n- bad_deploy_errors: a new deploy of the service introduced errors\n- slow_query: a database query became slow\n- memory_leak: the service's memory grows until it degrades\n- consumer_backpressure: a stream consumer can't keep up; lag grows\n- retry_storm: aggressive retries amplify load on a dependency\n- cache_disabled: a cache stopped working, increasing load and latency\n- db_disk_full: the database cannot write (disk full)\n- other: none of the above\n\nHow to work:\n- Start from the briefing. Symptoms propagate UP the call graph: when a service is slow or failing, its callers show errors/latency too. The root cause is usually the most downstream service with its own anomaly, or the service that changed (deploy/config) right before symptoms.\n- Background noise exists: the batch pipeline runs every 2 minutes and briefly raises latency on services that touch the database. Anomalies marked \"(minor)\" are within that normal variation. If the briefing has only minor anomalies and no error log patterns, error spans or changes, submit \"no_incident\" without drilling down.\n- Check the timeline: the cause starts first. Changes that happen after symptoms began, or that restore earlier settings, are reactions, not causes.\n- Drill down with tools only when it changes your answer. You have at most 7 turns.\n- If nothing is meaningfully wrong (no clear anomaly or error pattern), submit status \"no_incident\". If something is wrong but evidence doesn't support a cause, submit \"insufficient_evidence\".\n- Cite evidence ids (ev_...) exactly as given; never invent ids.\n- Finish by calling submit_diagnosis with up to 3 ranked hypotheses."
+ },
+ {
+  "role": "user",
+  "content": "Incident briefing:\n\nWindow 09:51:45-09:55:45 UTC; first 60s used as the normal reference.\n\n## Anomalous signals (earliest first)\n[ev_e76c414b] query-engine latency_p95: 24ms -> 883ms, from 09:53:25\n[ev_1f2f69ea] query-engine dependency_latency_p95 peer_service=metadata: 5ms -> 485ms, from 09:53:30\n[ev_367e72f9] metadata latency_p95: 5ms -> 484ms, from 09:53:30\n[ev_9b0cf490] gateway dependency_latency_p95 peer_service=query-engine: 24ms -> 884ms, from 09:53:35\n[ev_fc095d32] gateway dependency_latency_p95 peer_service=metadata: 8ms -> 485ms, from 09:53:35\n[ev_3f499a22] gateway latency_p95: 26ms -> 1.94s, from 09:53:45\n[ev_542bd296] stream-processor dependency_latency_p95 peer_service=metadata: 55ms -> 485ms, from 09:55:05\n[ev_816a8f2b] scheduler job_duration_p95 job_name=nightly_pipeline: 2.42s -> 4.62s, from 09:55:05 (minor)\n[ev_102a1dee] scheduler job_duration_p95 job_name=ingest: 975ms -> 2.27s, from 09:55:05 (minor)\n[ev_49a4e373] stream-processor latency_p95: 988ms -> 2.42s, from 09:55:10\n[ev_8066dc65] scheduler dependency_latency_p95 peer_service=stream-processor: 988ms -> 2.42s, from 09:55:10\n[ev_49c4e3e9] scheduler dependency_latency_p95 peer_service=metadata: 24ms -> 242ms, from 09:55:10 (minor)\n\n## New/increased WARNING+ERROR log patterns\n(none)\n\n## Changes (deploys, config, restarts)\n(none)\n\n## Span behaviour\n[ev_2c3bd8af] gateway SERVER span p90 19ms -> 1004ms\n[ev_0973ca3d] metadata SERVER span p90 4ms -> 388ms\n[ev_a048d176] query-engine SERVER span p90 16ms -> 735ms"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_0ac3b8f7-c4b0-49aa-a187-f3276ed36cca",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"metadata\",\"signal\":\"db_pool_utilization\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_0ac3b8f7-c4b0-49aa-a187-f3276ed36cca",
+  "content": "[ev_d2d9d661] metadata db_pool_utilization {}: reference max 0, peak 0.2 ratio\n  09:51:50=0, 09:52:10=0, 09:52:30=0, 09:52:50=0, 09:53:10=0, 09:53:30=0, 09:53:50=0, 09:54:10=0, 09:54:30=0, 09:54:50=0, 09:55:10=0, 09:55:30=0"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_195d2dc9-734f-4cf7-a1b7-8bae377883a3",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"metadata\",\"signal\":\"cache_hit_ratio\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_195d2dc9-734f-4cf7-a1b7-8bae377883a3",
+  "content": "[ev_69257db1] metadata cache_hit_ratio {}: reference max 0.9726, peak 0.9726 ratio\n  09:51:50=0.97, 09:52:10=0.969, 09:52:30=0.97, 09:52:50=0.97, 09:53:10=0.971, 09:53:30=0.972, 09:53:50=0.971, 09:54:10=0.969, 09:54:30=0.968, 09:54:50=0.969, 09:55:10=0.97, 09:55:30=0.97"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_d14ebfea-130a-46af-8c64-f52b8c99b51b",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"metadata\",\"signal\":\"dependency_latency_p95\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_d14ebfea-130a-46af-8c64-f52b8c99b51b",
+  "content": "no data for dependency_latency_p95 on metadata"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_399427a0-4e73-43d9-bb5e-1db0ed2edb10",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"metadata\",\"signal\":\"db_pool_wait_p95\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_399427a0-4e73-43d9-bb5e-1db0ed2edb10",
+  "content": "[ev_737d22c6] metadata db_pool_wait_p95 {}: reference max 0.00475, peak 0.00475 s\n  09:51:50=0.00475, 09:52:10=0.00475, 09:52:30=0.00475, 09:52:50=0.00475, 09:53:10=0.00475, 09:53:30=0.00475, 09:53:50=0.00475, 09:54:10=0.00475, 09:54:30=0.00475, 09:54:50=0.00475, 09:55:10=0.00475, 09:55:30=0.00475"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_b399bfa0-1a62-4c0e-a778-29ee810b9b13",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"metadata\",\"signal\":\"db_operation_p95\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_b399bfa0-1a62-4c0e-a778-29ee810b9b13",
+  "content": "[ev_6977ea58] metadata db_operation_p95 {'db_operation_name': 'INSERT partitions'}: reference max 0.065, peak 0.09 s\n  09:51:50=0.065, 09:51:55=0.065, 09:52:00=0.065, 09:53:10=0.09, 09:53:15=0.09, 09:53:20=0.09, 09:53:25=0.09, 09:53:30=0.09, 09:53:35=0.09, 09:53:40=0.09, 09:53:45=0.09, 09:53:50=0.09, 09:53:55=0.09, 09:54:00=0.09, 09:55:10=0.00475, 09:55:15=0.019, 09:55:20=0.019, 09:55:25=0.019, 09:55:30=0.019, 09:55:35=0.019, 09:55:40=0.019, 09:55:45=0.019\n[ev_19789a54] metadata db_operation_p95 {'db_operation_name': 'SELECT datasets'}: reference max 0.00475, peak 0.004851 s\n  09:51:50=0.00475, 09:52:10=0.00475, 09:52:30=0.00475, 09:52:50=0.00475, 09:53:10=0.00475, 09:53:30=0.00475, 09:53:50=0.00475, 09:54:10=0.00475, 09:54:30=0.00475, 09:54:50=0.00475, 09:55:10=0.00475, 09:55:30=0.00475\n[ev_5cb5b349] metadata db_operation_p95 {'db_operation_name': 'SELECT partitions'}: reference max 0.004758, peak 0.00476 s\n  09:51:50=0.00475, 09:52:10=0.00475, 09:52:30=0.00475, 09:52:50=0.00476, 09:53:10=0.00476, 09:53:30=0.00476, 09:53:50=0.00475, 09:54:10=0.00475, 09:54:30=0.00475, 09:54:50=0.00476, 09:55:10=0.00476, 09:55:30=0.00475"
+ },
+ {
+  "role": "assistant",
+  "content": "{\n  \"hypotheses\": [\n    {\n      \"confidence\": 0.92,\n      \"evidence\": [\"ev_367e72f9\", \"ev_2c3bd8af\", \"ev_6977ea58\"],\n      \"fault_type\": \"slow_query\",\n      \"service\": \"metadata\",\n      \"summary\": \"Metadata service latency spiked (latency_p95 5\u202fms \u2192\u202f484\u202fms) and its server span grew (p90 4\u202fms \u2192\u202f388\u202fms). The underlying cause is a sudden increase in the INSERT partitions DB operation latency (0.065\u202fs \u2192\u202f0.09\u202fs) starting at 09:53, which propagates as dependency latency to query\u2011engine, gateway, scheduler and stream\u2011processor.\"\n    },\n    {\n      \"confidence\": 0.07,\n      \"evidence\": [\"ev_e76c414b\", \"ev_0973ca3d\"],\n      \"fault_type\": \"dependency_latency\",\n      \"service\": \"query-engine\",\n      \"summary\": \"Query\u2011engine shows increased latency, but this follows the metadata slowdown and is likely a downstream effect.\"\n    },\n    {\n      \"confidence\": 0.01,\n      \"evidence\": [\"ev_3f499a22\", \"ev_a048d176\"],\n      \"fault_type\": \"dependency_latency\",\n      \"service\": \"gateway\",\n      \"summary\": \"Gateway latency rise is downstream of metadata and query\u2011engine.\"\n    }\n  ],\n  \"status\": \"diagnosed\",\n  \"summary\": \"The incident originated in the metadata service where a slow INSERT partitions database query caused its latency to jump, leading to cascading dependency\u2011latency spikes in query\u2011engine, gateway, scheduler and stream\u2011processor.\"\n}"
+ },
+ {
+  "role": "user",
+  "content": "Call submit_diagnosis now."
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_0575e01e-e78b-42ae-9bd0-6ff1864807fb",
+    "type": "function",
+    "function": {
+     "name": "submit_diagnosis",
+     "arguments": "{\"hypotheses\":[{\"confidence\":0.92,\"evidence\":[\"ev_367e72f9\",\"ev_2c3bd8af\",\"ev_6977ea58\"],\"fault_type\":\"slow_query\",\"service\":\"metadata\",\"summary\":\"Metadata service latency spiked (latency_p95 5\u202fms \u2192\u202f484\u202fms) and its server span grew (p90 4\u202fms \u2192\u202f388\u202fms). The underlying cause is a sudden increase in the INSERT partitions DB operation latency (0.065\u202fs \u2192\u202f0.09\u202fs) starting at 09:53, which propagates as dependency latency to query\u2011engine, gateway, scheduler and stream\u2011processor.\"},{\"confidence\":0.07,\"evidence\":[\"ev_e76c414b\",\"ev_0973ca3d\"],\"fault_type\":\"dependency_latency\",\"service\":\"query-engine\",\"summary\":\"Query\u2011engine shows increased latency, but this follows the metadata slowdown and is likely a downstream effect.\"},{\"confidence\":0.01,\"evidence\":[\"ev_3f499a22\",\"ev_a048d176\"],\"fault_type\":\"dependency_latency\",\"service\":\"gateway\",\"summary\":\"Gateway latency rise is downstream of metadata and query\u2011engine.\"}],\"status\":\"diagnosed\",\"summary\":\"The incident originated in the metadata service where a slow INSERT partitions database query caused its latency to jump, leading to cascading dependency\u2011latency spikes in query\u2011engine, gateway, scheduler and stream\u2011processor.\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_0575e01e-e78b-42ae-9bd0-6ff1864807fb",
+  "content": "submitted"
+ }
+]

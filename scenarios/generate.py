@@ -101,6 +101,24 @@ def bad_deploy(target: str, intensity: float) -> dict[str, Any]:
     }
 
 
+# Held-out set: new targets, intensities and seeds, defined after the triage thresholds and the
+# agent prompt were frozen. Scored once, never used for tuning.
+HELD_OUT: list[tuple[str, dict[str, Any] | None]] = [
+    ("h-f1-pool-query-engine", pool_exhaustion("query-engine", 10)),
+    ("h-f1-pool-metadata", pool_exhaustion("metadata", 10)),
+    ("h-f2-latency-metadata", latency("metadata", 0.3)),
+    ("h-f2-latency-query-engine", latency("query-engine", 0.45)),
+    ("h-f2-latency-gateway", latency("gateway", 0.5)),
+    ("h-f3-timeout-gateway-query-engine", timeout_misconfig("gateway", "query-engine", 0.6)),
+    ("h-f3-timeout-scheduler-metadata", timeout_misconfig("scheduler", "metadata", 0.7)),
+    ("h-f4-bad-input", bad_input(0.4, 7)),
+    ("h-f5-deploy-query-engine", bad_deploy("query-engine", 0.4)),
+    ("h-f5-deploy-metadata", bad_deploy("metadata", 0.5)),
+    ("h-f0-no-fault-a", None),
+    ("h-f0-no-fault-b", None),
+]
+
+
 def scenarios() -> list[ScenarioDef]:
     specs: list[tuple[str, dict[str, Any] | None]] = [
         ("f1-pool-query-engine-a", pool_exhaustion("query-engine", 8)),
@@ -129,7 +147,7 @@ def scenarios() -> list[ScenarioDef]:
         ("f0-no-fault-c", None),
     ]
     out = []
-    for i, (scenario_id, spec) in enumerate(specs):
+    for i, (scenario_id, spec) in enumerate(specs + HELD_OUT):
         if spec is None:
             fault = {"fault_type": "none", "target": "platform", "intensity": 0.0}
             label = {"root_cause": None, "expected_abstain": True}

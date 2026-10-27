@@ -1,0 +1,28 @@
+[
+ {
+  "role": "system",
+  "content": "You are an SRE investigating an incident on a data platform. Find the root cause: the single service whose own fault started the problem, and what kind of fault it is.\n\nPlatform services and dependencies (caller -> callees):\n- gateway (Public API for interactive queries) -> query-engine, metadata\n- query-engine (Plans and executes queries over datasets) -> metadata, platform-db\n- metadata (Dataset catalog, schemas and partitions, with an in-process cache) -> platform-db\n- scheduler (Triggers the nightly ingest pipeline and retries failed jobs) -> stream-processor, metadata\n- stream-processor (Runs ingest jobs that write dataset partitions) -> metadata, platform-db\n\nFault types:\n- db_pool_exhaustion: the service's database connection pool is exhausted (e.g. leaked connections)\n- dependency_latency: the service itself became slow, slowing everything that calls it\n- upstream_timeout_misconfig: the service's timeout for calls to a dependency is misconfigured too low\n- bad_input_job_failure: batch jobs fail on malformed/invalid input data\n- bad_deploy_errors: a new deploy of the service introduced errors\n- slow_query: a database query became slow\n- memory_leak: the service's memory grows until it degrades\n- consumer_backpressure: a stream consumer can't keep up; lag grows\n- retry_storm: aggressive retries amplify load on a dependency\n- cache_disabled: a cache stopped working, increasing load and latency\n- db_disk_full: the database cannot write (disk full)\n- other: none of the above\n\nHow to work:\n- Start from the briefing. Symptoms propagate UP the call graph: when a service is slow or failing, its callers show errors/latency too. The root cause is usually the most downstream service with its own anomaly, or the service that changed (deploy/config) right before symptoms.\n- Background noise exists: the batch pipeline runs every 2 minutes and briefly raises latency on services that touch the database. Anomalies marked \"(minor)\" are within that normal variation. If the briefing has only minor anomalies and no error log patterns, error spans or changes, submit \"no_incident\" without drilling down.\n- Check the timeline: the cause starts first. Changes that happen after symptoms began, or that restore earlier settings, are reactions, not causes.\n- Drill down with tools only when it changes your answer. You have at most 7 turns.\n- If nothing is meaningfully wrong (no clear anomaly or error pattern), submit status \"no_incident\". If something is wrong but evidence doesn't support a cause, submit \"insufficient_evidence\".\n- Cite evidence ids (ev_...) exactly as given; never invent ids.\n- Finish by calling submit_diagnosis with up to 3 ranked hypotheses."
+ },
+ {
+  "role": "user",
+  "content": "Incident briefing:\n\nWindow 15:03:29-15:07:32 UTC; first 60s used as the normal reference.\n\n## Anomalous signals (earliest first)\n[ev_e76c414b] query-engine latency_p95: 47ms -> 121ms, from 15:05:09 (minor)\n[ev_8d2c3bc6] gateway error_ratio: 0.0% -> 15.4%, from 15:05:44\n\n## New/increased WARNING+ERROR log patterns\n[ev_36e6fdc3] gateway ERROR x433 (x0 before) from 15:05:03: Unhandled error in POST /api/query: KeyError: '<v>'\n[ev_e9566c3c] gateway ERROR x433 (x0 before) from 15:05:03: Exception in ASGI application\n\n## Changes (deploys, config, restarts)\n[ev_a1fd2044] gateway: 15:05:03 Deployed gateway 0.1.1 (was 0.1.0)\n[ev_3460dd61] gateway: 15:07:32 Deployed gateway 0.1.0 (was 0.1.1)\n\n## Span behaviour\n[ev_caccb6ce] gateway error spans 0 -> 431 (POST /api/query x431)"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_4afd7586-d824-4d4f-8070-501a3dd4bfff",
+    "type": "function",
+    "function": {
+     "name": "submit_diagnosis",
+     "arguments": "{\"hypotheses\":[{\"confidence\":0.9,\"evidence\":[\"ev_a1fd2044\",\"ev_36e6fdc3\",\"ev_e9566c3c\",\"ev_caccb6ce\",\"ev_8d2c3bc6\"],\"fault_type\":\"bad_deploy_errors\",\"service\":\"gateway\",\"summary\":\"New gateway 0.1.1 deploy introduced unhandled KeyError causing request failures and error spikes\"}],\"status\":\"diagnosed\",\"summary\":\"The incident was triggered by a faulty gateway deployment (0.1.1) that produced unhandled KeyError exceptions, leading to high error ratio and downstream impact.\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_4afd7586-d824-4d4f-8070-501a3dd4bfff",
+  "content": "submitted"
+ }
+]

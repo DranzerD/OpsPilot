@@ -1,0 +1,26 @@
+id: h-f3-timeout-gateway-query-engine
+fault:
+  fault_type: upstream_timeout_misconfig
+  target: gateway->query-engine
+  intensity: 0.6
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 29
+label:
+  root_cause:
+    service: gateway
+    fault_type: upstream_timeout_misconfig
+  key_evidence:
+  - kind: change
+    service: gateway
+    change_kind: config
+  - kind: metric
+    service: gateway
+    signal: dependency_error_ratio
+    labels:
+      peer_service: query-engine
+  - kind: log
+    service: gateway
+    pattern: Upstream query-engine call .* exceeded deadline

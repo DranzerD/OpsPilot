@@ -1,0 +1,126 @@
+[
+ {
+  "role": "system",
+  "content": "You are an SRE investigating an incident on a data platform. Find the root cause: the single service whose own fault started the problem, and what kind of fault it is.\n\nPlatform services and dependencies (caller -> callees):\n- gateway (Public API for interactive queries) -> query-engine, metadata\n- query-engine (Plans and executes queries over datasets) -> metadata, platform-db\n- metadata (Dataset catalog, schemas and partitions, with an in-process cache) -> platform-db\n- scheduler (Triggers the nightly ingest pipeline and retries failed jobs) -> stream-processor, metadata\n- stream-processor (Runs ingest jobs that write dataset partitions) -> metadata, platform-db\n\nFault types:\n- db_pool_exhaustion: the service's database connection pool is exhausted (e.g. leaked connections)\n- dependency_latency: the service itself became slow, slowing everything that calls it\n- upstream_timeout_misconfig: the service's timeout for calls to a dependency is misconfigured too low\n- bad_input_job_failure: batch jobs fail on malformed/invalid input data\n- bad_deploy_errors: a new deploy of the service introduced errors\n- slow_query: a database query became slow\n- memory_leak: the service's memory grows until it degrades\n- consumer_backpressure: a stream consumer can't keep up; lag grows\n- retry_storm: aggressive retries amplify load on a dependency\n- cache_disabled: a cache stopped working, increasing load and latency\n- db_disk_full: the database cannot write (disk full)\n- other: none of the above\n\nHow to work:\n- Start from the briefing. Symptoms propagate UP the call graph: when a service is slow or failing, its callers show errors/latency too. The root cause is usually the most downstream service with its own anomaly, or the service that changed (deploy/config) right before symptoms.\n- Background noise exists: the batch pipeline runs every 2 minutes and briefly raises latency on services that touch the database. Anomalies marked \"(minor)\" are within that normal variation. If the briefing has only minor anomalies and no error log patterns, error spans or changes, submit \"no_incident\" without drilling down.\n- Check the timeline: the cause starts first. Changes that happen after symptoms began, or that restore earlier settings, are reactions, not causes.\n- Drill down with tools only when it changes your answer. You have at most 7 turns.\n- If nothing is meaningfully wrong (no clear anomaly or error pattern), submit status \"no_incident\". If something is wrong but evidence doesn't support a cause, submit \"insufficient_evidence\".\n- Cite evidence ids (ev_...) exactly as given; never invent ids.\n- Finish by calling submit_diagnosis with up to 3 ranked hypotheses."
+ },
+ {
+  "role": "user",
+  "content": "Incident briefing:\n\nWindow 14:51:04-14:55:04 UTC; first 60s used as the normal reference.\n\n## Anomalous signals (earliest first)\n[ev_e76c414b] query-engine latency_p95: 24ms -> 486ms, from 14:52:49\n[ev_3f499a22] gateway latency_p95: 36ms -> 472ms, from 14:52:49\n[ev_9b0cf490] gateway dependency_latency_p95 peer_service=query-engine: 25ms -> 486ms, from 14:52:54\n\n## New/increased WARNING+ERROR log patterns\n(none)\n\n## Changes (deploys, config, restarts)\n(none)\n\n## Span behaviour\n[ev_2c3bd8af] gateway SERVER span p90 20ms -> 370ms\n[ev_a048d176] query-engine SERVER span p90 17ms -> 394ms"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_5bc0fb38-70a8-4f7b-974e-4a013d90b812",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"peer_service\":\"metadata\",\"service\":\"query-engine\",\"signal\":\"dependency_latency_p95\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_5bc0fb38-70a8-4f7b-974e-4a013d90b812",
+  "content": "[ev_1f2f69ea] query-engine dependency_latency_p95 {'peer_service': 'metadata'}: reference max 0.00841, peak 0.008614 s\n  14:51:04=0.00816, 14:51:24=0.00785, 14:51:44=0.00621, 14:52:04=0.00498, 14:52:24=0.00597, 14:52:44=0.00682, 14:53:04=0.00754, 14:53:24=0.00817, 14:53:44=0.00857, 14:54:04=0.00861, 14:54:24=0.00857, 14:54:44=0.0085, 14:55:04=0.00838"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_8b924144-2b39-48db-9bef-6404c179aa52",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"metadata\",\"signal\":\"latency_p95\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_8b924144-2b39-48db-9bef-6404c179aa52",
+  "content": "[ev_367e72f9] metadata latency_p95 {}: reference max 0.004845, peak 0.004845 s\n  14:51:04=0.00485, 14:51:24=0.00479, 14:51:44=0.00477, 14:52:04=0.00477, 14:52:24=0.00479, 14:52:44=0.00481, 14:53:04=0.00483, 14:53:24=0.00482, 14:53:44=0.0048, 14:54:04=0.00479, 14:54:24=0.0048, 14:54:44=0.0048, 14:55:04=0.0048"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_28c04cc1-e59a-4bd8-8fdb-c5a85e9ce54d",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"query-engine\",\"signal\":\"db_pool_utilization\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_28c04cc1-e59a-4bd8-8fdb-c5a85e9ce54d",
+  "content": "[ev_8f699f59] query-engine db_pool_utilization {}: reference max 0, peak 0 ratio\n  14:51:04=0, 14:51:24=0, 14:51:44=0, 14:52:04=0, 14:52:24=0, 14:52:44=0, 14:53:04=0, 14:53:24=0, 14:53:44=0, 14:54:04=0, 14:54:24=0, 14:54:44=0, 14:55:04=0"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_9c8cae61-6c51-443d-98f9-5878bc1915f2",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"query-engine\",\"signal\":\"db_operation_p95\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_9c8cae61-6c51-443d-98f9-5878bc1915f2",
+  "content": "[ev_6b3d8d51] query-engine db_operation_p95 {'db_operation_name': 'query aggregate'}: reference max 0.01327, peak 0.01843 s\n  14:51:04=0.0103, 14:51:24=0.00991, 14:51:44=0.00968, 14:52:04=0.00953, 14:52:24=0.00964, 14:52:44=0.00985, 14:53:04=0.0156, 14:53:24=0.0178, 14:53:44=0.0181, 14:54:04=0.0158, 14:54:24=0.0177, 14:54:44=0.0169, 14:55:04=0.0145\n[ev_e75b7bed] query-engine db_operation_p95 {'db_operation_name': 'query count'}: reference max 0.00475, peak 0.00477 s\n  14:51:04=0.00475, 14:51:24=0.00475, 14:51:44=0.00475, 14:52:04=0.00475, 14:52:24=0.00475, 14:52:44=0.00475, 14:53:04=0.00475, 14:53:24=0.00475, 14:53:44=0.00477, 14:54:04=0.00477, 14:54:24=0.00477, 14:54:44=0.00475, 14:55:04=0.00477\n[ev_f4a50bae] query-engine db_operation_p95 {'db_operation_name': 'query scan'}: reference max 0.00475, peak 0.004848 s\n  14:51:04=0.00475, 14:51:24=0.00475, 14:51:44=0.00475, 14:52:04=0.00475, 14:52:24=0.00475, 14:52:44=0.00475, 14:53:04=0.00475, 14:53:24=0.00475, 14:53:44=0.00483, 14:54:04=0.00484, 14:54:24=0.00485, 14:54:44=0.00475, 14:55:04=0.00475"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_5a04f99d-0f6e-4ecd-ac1a-f5307debcc39",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"query-engine\",\"signal\":\"db_pool_wait_p95\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_5a04f99d-0f6e-4ecd-ac1a-f5307debcc39",
+  "content": "[ev_e384e7a2] query-engine db_pool_wait_p95 {}: reference max 0.00475, peak 0.00475 s\n  14:51:04=0.00475, 14:51:24=0.00475, 14:51:44=0.00475, 14:52:04=0.00475, 14:52:24=0.00475, 14:52:44=0.00475, 14:53:04=0.00475, 14:53:24=0.00475, 14:53:44=0.00475, 14:54:04=0.00475, 14:54:24=0.00475, 14:54:44=0.00475, 14:55:04=0.00475"
+ },
+ {
+  "role": "assistant",
+  "content": "{\n  \"hypotheses\": [\n    {\n      \"confidence\": 0.85,\n      \"evidence\": [\"ev_e76c414b\", \"ev_2c3bd8af\", \"ev_a048d176\", \"ev_6b3d8d51\"],\n      \"fault_type\": \"slow_query\",\n      \"service\": \"query-engine\",\n      \"summary\": \"The query-engine\u2019s latency spiked (ev_e76c414b) and its server\u2011side span grew (ev_2c3bd8af, ev_a048d176). The only internal metric that changed significantly is the \u201cquery aggregate\u201d DB operation latency, which rose from ~10\u202fms to ~18\u202fms (ev_6b3d8d51). Downstream services (metadata) show no latency increase, and there are no connection\u2011pool, cache, or timeout anomalies. Thus the root cause is a slow database query inside query\u2011engine.\"\n    }\n  ],\n  \"status\": \"diagnosed\",\n  \"summary\": \"Root cause: query-engine suffered a slow_query fault, likely due to a degraded aggregate query against the platform DB, which propagated latency to gateway.\"\n}"
+ },
+ {
+  "role": "user",
+  "content": "Call submit_diagnosis now."
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_92cf9df4-24c5-426b-bcea-e6ae76d259e5",
+    "type": "function",
+    "function": {
+     "name": "submit_diagnosis",
+     "arguments": "{\"hypotheses\":[{\"confidence\":0.85,\"evidence\":[\"ev_e76c414b\",\"ev_2c3bd8af\",\"ev_a048d176\",\"ev_6b3d8d51\"],\"fault_type\":\"slow_query\",\"service\":\"query-engine\",\"summary\":\"The query-engine\u2019s latency spiked (ev_e76c414b) and its server\u2011side span grew (ev_2c3bd8af, ev_a048d176). The only internal metric that changed significantly is the \u201cquery aggregate\u201d DB operation latency, which rose from ~10\u202fms to ~18\u202fms (ev_6b3d8d51). Downstream services (metadata) show no latency increase, and there are no connection\u2011pool, cache, or timeout anomalies. Thus the root cause is a slow database query inside query\u2011engine.\"}],\"status\":\"diagnosed\",\"summary\":\"Root cause: query-engine suffered a slow_query fault, likely due to a degraded aggregate query against the platform DB, which propagated latency to gateway.\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_92cf9df4-24c5-426b-bcea-e6ae76d259e5",
+  "content": "submitted"
+ }
+]

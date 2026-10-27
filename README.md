@@ -11,7 +11,8 @@ The original design is in [docs/SPEC.md](docs/SPEC.md). What's built is a subset
 
 ## Results
 
-24 recorded incidents: 21 faults across 5 fault types and 4 services, plus 3 no-fault runs.
+24 development incidents (21 faults across 5 fault types and 4 services, plus 3 no-fault runs) and
+12 held-out incidents. The first table is the development set; the held-out table follows.
 Full per-scenario output is in [results/final/](results/final/).
 
 | System | Top-1 root cause | Top-3 | No-fault runs cleared | Citations valid | Evidence relevance | Median latency | p95 latency | Tokens / run |
@@ -19,6 +20,7 @@ Full per-scenario output is in [results/final/](results/final/).
 | Rules baseline | **100%** (21/21) | 100% | 3/3 | 100% | 96% | 0.1 s | 0.1 s | 0 |
 | Agent (gpt-oss-20b + tools) | **86%** (18/21) | 86% | 3/3 | 100% (92/92) | 81% | 13.7 s | 29.4 s | 2.5k |
 | Agent, briefing only (no tools) | 76% (16/21) | 81% | 3/3 | 100% (118/118) | 73% | 9.5 s | 14.8 s | 1.5k |
+| Agent (gpt-oss-120b + tools) | 86% (18/21) | 86% | 2/3 | 100% (115/115) | 82% | 9.5 s | 93 s | 5.0k |
 
 Top-1 by fault type:
 
@@ -45,10 +47,37 @@ What the numbers say:
   for these five fault types and checked against these same scenarios. The agent has only a
   general prompt. The interesting comparison is agent vs. agent-without-tools.
 
-Caveats: 21 faulted scenarios is a small sample (one miss moves top-1 by ~5 points). Prompts and
-the triage noise threshold were adjusted during development on this same scenario set; there is
-no held-out set yet. 3 of 24 bundles show weaker evidence than labelled (`scenarios.check`) and are
-kept.
+### Held-out set
+
+12 further incidents (10 faults, 2 no-fault) with new targets, intensities and seeds were recorded
+after the triage thresholds and prompts were frozen, and scored exactly once (`results/heldout*`).
+Nothing was tuned on them.
+
+| System | Top-1 root cause | Right service | No-fault runs cleared | Citations valid |
+|---|---|---|---|---|
+| Rules baseline | 90% (9/10) | 90% | 1/2 | 100% |
+| Agent (gpt-oss-20b + tools) | 70% (7/10) | 80% | 0/2 | 100% (58/58) |
+| Agent, briefing only (20b) | 70% (7/10) | 80% | 0/2 | 100% |
+| Agent (gpt-oss-120b + tools) | 70% (7/10) | 90% | 0/2 | 100% (61/61) |
+
+What the held-out set shows, and the tuned-set numbers above did not:
+
+- **The 86% was optimistic.** On unseen incidents the agent gets 70% top-1 (10 incidents, so
+  roughly +/-15 points). Bad deploys, pool exhaustion and malformed input stay at 100%; latency
+  faults (1/3) and timeout misconfigurations (1/2) are where it fails.
+- **No-fault runs are the real weakness.** Both agents (and the rules) mistake background noise,
+  mostly batch-pipeline activity on `stream-processor`, for an incident. The tuned set hid this.
+- **A larger model did not help:** gpt-oss-120b matches 20b on top-1 (on the tuned set too, 18/21)
+  while using 2-3x the tokens and a 125 s p95 latency.
+- **Citations stay grounded:** 100% valid on every system, tuned and held-out.
+- Two held-out bundles (`h-f3-timeout-scheduler-metadata`, `h-f4-bad-input`) show weaker evidence
+  than labelled; they are kept, and the scheduler one is a miss for every system.
+
+Caveats: 21 tuned and 10 held-out faults are small samples (one miss moves top-1 by 5-10 points).
+Prompts and the triage noise threshold were adjusted during development on the first 24 scenarios;
+the held-out set was not used for any change. 3 of those 24 bundles also show weaker evidence than
+labelled (`scenarios.check`) and are kept. Any fix made after seeing the held-out misses (noise
+handling for no-fault runs is the obvious one) would need a fresh held-out set to be credited.
 
 ## How the investigator works
 

@@ -1,0 +1,25 @@
+id: h-f4-bad-input
+fault:
+  fault_type: bad_input_job_failure
+  target: stream-processor
+  intensity: 0.4
+  params:
+    seed: 7
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 31
+label:
+  root_cause:
+    service: stream-processor
+    fault_type: bad_input_job_failure
+  key_evidence:
+  - kind: metric
+    service: scheduler
+    signal: job_failure_ratio
+    labels:
+      job_name: ingest
+  - kind: log
+    service: stream-processor
+    pattern: Schema validation failed

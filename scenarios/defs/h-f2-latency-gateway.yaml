@@ -1,0 +1,21 @@
+id: h-f2-latency-gateway
+fault:
+  fault_type: dependency_latency
+  target: gateway
+  intensity: 0.5
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 28
+label:
+  root_cause:
+    service: gateway
+    fault_type: dependency_latency
+  key_evidence:
+  - kind: metric
+    service: gateway
+    signal: latency_p95
+  - kind: trace
+    service: gateway
+    signal: span_duration

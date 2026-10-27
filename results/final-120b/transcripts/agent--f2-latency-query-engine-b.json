@@ -1,0 +1,100 @@
+[
+ {
+  "role": "system",
+  "content": "You are an SRE investigating an incident on a data platform. Find the root cause: the single service whose own fault started the problem, and what kind of fault it is.\n\nPlatform services and dependencies (caller -> callees):\n- gateway (Public API for interactive queries) -> query-engine, metadata\n- query-engine (Plans and executes queries over datasets) -> metadata, platform-db\n- metadata (Dataset catalog, schemas and partitions, with an in-process cache) -> platform-db\n- scheduler (Triggers the nightly ingest pipeline and retries failed jobs) -> stream-processor, metadata\n- stream-processor (Runs ingest jobs that write dataset partitions) -> metadata, platform-db\n\nFault types:\n- db_pool_exhaustion: the service's database connection pool is exhausted (e.g. leaked connections)\n- dependency_latency: the service itself became slow, slowing everything that calls it\n- upstream_timeout_misconfig: the service's timeout for calls to a dependency is misconfigured too low\n- bad_input_job_failure: batch jobs fail on malformed/invalid input data\n- bad_deploy_errors: a new deploy of the service introduced errors\n- slow_query: a database query became slow\n- memory_leak: the service's memory grows until it degrades\n- consumer_backpressure: a stream consumer can't keep up; lag grows\n- retry_storm: aggressive retries amplify load on a dependency\n- cache_disabled: a cache stopped working, increasing load and latency\n- db_disk_full: the database cannot write (disk full)\n- other: none of the above\n\nHow to work:\n- Start from the briefing. Symptoms propagate UP the call graph: when a service is slow or failing, its callers show errors/latency too. The root cause is usually the most downstream service with its own anomaly, or the service that changed (deploy/config) right before symptoms.\n- Background noise exists: the batch pipeline runs every 2 minutes and briefly raises latency on services that touch the database. Anomalies marked \"(minor)\" are within that normal variation. If the briefing has only minor anomalies and no error log patterns, error spans or changes, submit \"no_incident\" without drilling down.\n- Check the timeline: the cause starts first. Changes that happen after symptoms began, or that restore earlier settings, are reactions, not causes.\n- Drill down with tools only when it changes your answer. You have at most 7 turns.\n- If nothing is meaningfully wrong (no clear anomaly or error pattern), submit status \"no_incident\". If something is wrong but evidence doesn't support a cause, submit \"insufficient_evidence\".\n- Cite evidence ids (ev_...) exactly as given; never invent ids.\n- Finish by calling submit_diagnosis with up to 3 ranked hypotheses."
+ },
+ {
+  "role": "user",
+  "content": "Incident briefing:\n\nWindow 14:57:01-15:01:02 UTC; first 60s used as the normal reference.\n\n## Anomalous signals (earliest first)\n[ev_3f499a22] gateway latency_p95: 28ms -> 1.69s, from 14:59:31\n[ev_e76c414b] query-engine latency_p95: 24ms -> 1.92s, from 15:00:16\n[ev_9b0cf490] gateway dependency_latency_p95 peer_service=query-engine: 24ms -> 1.94s, from 15:00:21\n[ev_542bd296] stream-processor dependency_latency_p95 peer_service=metadata: 130ms -> 400ms, from 15:00:21 (minor)\n[ev_49a4e373] stream-processor latency_p95: 2.20s -> 9.00s, from 15:00:26\n[ev_2638877a] stream-processor db_operation_p95 db_operation_name=DELETE records: 65ms -> 400ms, from 15:00:26\n[ev_1f2f69ea] query-engine dependency_latency_p95 peer_service=metadata: 8ms -> 223ms, from 15:00:26 (minor)\n[ev_8438235a] stream-processor db_operation_p95 db_operation_name=INSERT records: 9ms -> 200ms, from 15:00:26 (minor)\n[ev_6b3d8d51] query-engine db_operation_p95 db_operation_name=query aggregate: 10ms -> 190ms, from 15:00:26 (minor)\n[ev_8066dc65] scheduler dependency_latency_p95 peer_service=stream-processor: 2.20s -> 9.00s, from 15:00:31\n[ev_6977ea58] metadata db_operation_p95 db_operation_name=INSERT partitions: 190ms -> 400ms, from 15:00:31 (minor)\n[ev_fc095d32] gateway dependency_latency_p95 peer_service=metadata: 8ms -> 148ms, from 15:00:31 (minor)\n[ev_816a8f2b] scheduler job_duration_p95 job_name=nightly_pipeline: 2.42s -> 18.50s, from 15:00:36\n[ev_102a1dee] scheduler job_duration_p95 job_name=ingest: 2.30s -> 8.50s, from 15:00:36\n[ev_367e72f9] metadata latency_p95: 5ms -> 133ms, from 15:00:36 (minor)\n\n## New/increased WARNING+ERROR log patterns\n(none)\n\n## Changes (deploys, config, restarts)\n(none)\n\n## Span behaviour\n[ev_2c3bd8af] gateway SERVER span p90 20ms -> 778ms\n[ev_a048d176] query-engine SERVER span p90 15ms -> 845ms"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_258bdb69-1a4c-4074-8f9b-0f0f701800c6",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"stream-processor\",\"signal\":\"db_pool_utilization\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_258bdb69-1a4c-4074-8f9b-0f0f701800c6",
+  "content": "[ev_0c180088] stream-processor db_pool_utilization {}: reference max 0, peak 0.5 ratio\n  14:57:06=0, 14:57:26=0, 14:57:46=0, 14:58:06=0, 14:58:26=0, 14:58:46=0, 14:59:06=0, 14:59:26=0, 14:59:46=0, 15:00:06=0, 15:00:26=0.5, 15:00:46=0"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_bedac723-5dab-4256-ac15-3e30cccf3322",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"metadata\",\"signal\":\"db_pool_utilization\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_bedac723-5dab-4256-ac15-3e30cccf3322",
+  "content": "[ev_d2d9d661] metadata db_pool_utilization {}: reference max 0, peak 0 ratio\n  14:57:06=0, 14:57:26=0, 14:57:46=0, 14:58:06=0, 14:58:26=0, 14:58:46=0, 14:59:06=0, 14:59:26=0, 14:59:46=0, 15:00:06=0, 15:00:26=0, 15:00:46=0"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_09519f44-a4f6-46b9-b122-e00633f8fcaa",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"stream-processor\",\"signal\":\"db_pool_pending\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_09519f44-a4f6-46b9-b122-e00633f8fcaa",
+  "content": "[ev_b357a0c5] stream-processor db_pool_pending {}: reference max 0, peak 0 count\n  14:57:06=0, 14:57:26=0, 14:57:46=0, 14:58:06=0, 14:58:26=0, 14:58:46=0, 14:59:06=0, 14:59:26=0, 14:59:46=0, 15:00:06=0, 15:00:26=0, 15:00:46=0"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_80a17013-be3f-4bdd-8aac-731e7f0f34c2",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"metadata\",\"signal\":\"cache_hit_ratio\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_80a17013-be3f-4bdd-8aac-731e7f0f34c2",
+  "content": "[ev_69257db1] metadata cache_hit_ratio {}: reference max 0.9707, peak 0.9724 ratio\n  14:57:06=0.971, 14:57:26=0.97, 14:57:46=0.97, 14:58:06=0.968, 14:58:26=0.969, 14:58:46=0.971, 14:59:06=0.97, 14:59:26=0.969, 14:59:46=0.969, 15:00:06=0.969, 15:00:26=0.963, 15:00:46=0.953"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_4564ba48-757a-448d-80f2-2c4a2cfd0058",
+    "type": "function",
+    "function": {
+     "name": "submit_diagnosis",
+     "arguments": "{\"hypotheses\":[{\"confidence\":0.7,\"evidence\":[\"ev_49a4e373\",\"ev_2638877a\",\"ev_8438235a\",\"ev_6b3d8d51\"],\"fault_type\":\"slow_query\",\"service\":\"stream-processor\",\"summary\":\"Stream-processor latency spiked as its DB INSERT/DELETE operations slowed from ~10ms to 200-400ms, causing downstream latency.\"},{\"confidence\":0.2,\"evidence\":[\"ev_1f2f69ea\",\"ev_fc095d32\"],\"fault_type\":\"dependency_latency\",\"service\":\"metadata\",\"summary\":\"Metadata latency increased modestly, contributing to downstream delays.\"},{\"confidence\":0.1,\"evidence\":[\"ev_542bd296\"],\"fault_type\":\"dependency_latency\",\"service\":\"metadata\",\"summary\":\"Minor increase in stream-processor dependency latency to metadata.\"}],\"status\":\"diagnosed\",\"summary\":\"Root cause is stream-processor slow DB queries leading to its latency surge, propagating up the call graph.\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_4564ba48-757a-448d-80f2-2c4a2cfd0058",
+  "content": "submitted"
+ }
+]

@@ -1,0 +1,118 @@
+[
+ {
+  "role": "system",
+  "content": "You are an SRE investigating an incident on a data platform. Find the root cause: the single service whose own fault started the problem, and what kind of fault it is.\n\nPlatform services and dependencies (caller -> callees):\n- gateway (Public API for interactive queries) -> query-engine, metadata\n- query-engine (Plans and executes queries over datasets) -> metadata, platform-db\n- metadata (Dataset catalog, schemas and partitions, with an in-process cache) -> platform-db\n- scheduler (Triggers the nightly ingest pipeline and retries failed jobs) -> stream-processor, metadata\n- stream-processor (Runs ingest jobs that write dataset partitions) -> metadata, platform-db\n\nFault types:\n- db_pool_exhaustion: the service's database connection pool is exhausted (e.g. leaked connections)\n- dependency_latency: the service itself became slow, slowing everything that calls it\n- upstream_timeout_misconfig: the service's timeout for calls to a dependency is misconfigured too low\n- bad_input_job_failure: batch jobs fail on malformed/invalid input data\n- bad_deploy_errors: a new deploy of the service introduced errors\n- slow_query: a database query became slow\n- memory_leak: the service's memory grows until it degrades\n- consumer_backpressure: a stream consumer can't keep up; lag grows\n- retry_storm: aggressive retries amplify load on a dependency\n- cache_disabled: a cache stopped working, increasing load and latency\n- db_disk_full: the database cannot write (disk full)\n- other: none of the above\n\nHow to work:\n- Start from the briefing. Symptoms propagate UP the call graph: when a service is slow or failing, its callers show errors/latency too. The root cause is usually the most downstream service with its own anomaly, or the service that changed (deploy/config) right before symptoms.\n- Background noise exists: the batch pipeline runs every 2 minutes and briefly raises latency on services that touch the database. Anomalies marked \"(minor)\" are within that normal variation. If the briefing has only minor anomalies and no error log patterns, error spans or changes, submit \"no_incident\" without drilling down.\n- Check the timeline: the cause starts first. Changes that happen after symptoms began, or that restore earlier settings, are reactions, not causes.\n- Drill down with tools only when it changes your answer. You have at most 7 turns.\n- If nothing is meaningfully wrong (no clear anomaly or error pattern), submit status \"no_incident\". If something is wrong but evidence doesn't support a cause, submit \"insufficient_evidence\".\n- Cite evidence ids (ev_...) exactly as given; never invent ids.\n- Finish by calling submit_diagnosis with up to 3 ranked hypotheses."
+ },
+ {
+  "role": "user",
+  "content": "Incident briefing:\n\nWindow 09:59:10-10:03:10 UTC; first 60s used as the normal reference.\n\n## Anomalous signals (earliest first)\n[ev_e76c414b] query-engine latency_p95: 23ms -> 716ms, from 10:00:55\n[ev_9b0cf490] gateway dependency_latency_p95 peer_service=query-engine: 24ms -> 716ms, from 10:01:00\n[ev_3f499a22] gateway latency_p95: 24ms -> 683ms, from 10:01:00\n\n## New/increased WARNING+ERROR log patterns\n(none)\n\n## Changes (deploys, config, restarts)\n(none)\n\n## Span behaviour\n[ev_2c3bd8af] gateway SERVER span p90 17ms -> 537ms\n[ev_a048d176] query-engine SERVER span p90 15ms -> 584ms"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_ae653ab9-4bf7-4189-bc72-16cefe111914",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"query-engine\",\"signal\":\"db_pool_utilization\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_ae653ab9-4bf7-4189-bc72-16cefe111914",
+  "content": "[ev_8f699f59] query-engine db_pool_utilization {}: reference max 0.125, peak 0.125 ratio\n  09:59:10=0, 09:59:30=0, 09:59:50=0, 10:00:10=0, 10:00:30=0, 10:00:50=0, 10:01:10=0, 10:01:30=0, 10:01:50=0, 10:02:10=0, 10:02:30=0, 10:02:50=0, 10:03:10=0"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_972dc3b7-d9db-42cf-94ac-86c813ed120c",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"peer_service\":\"metadata\",\"service\":\"query-engine\",\"signal\":\"dependency_latency_p95\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_972dc3b7-d9db-42cf-94ac-86c813ed120c",
+  "content": "[ev_1f2f69ea] query-engine dependency_latency_p95 {'peer_service': 'metadata'}: reference max 0.004922, peak 0.006807 s\n  09:59:10=0.00491, 09:59:30=0.0049, 09:59:50=0.00489, 10:00:10=0.00483, 10:00:30=0.00488, 10:00:50=0.00494, 10:01:10=0.00494, 10:01:30=0.0049, 10:01:50=0.00489, 10:02:10=0.00493, 10:02:30=0.00498, 10:02:50=0.00499, 10:03:10=0.00681"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_ce2b7e15-33ec-4459-9a36-4a04a9339c82",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"query-engine\",\"signal\":\"db_operation_p95\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_ce2b7e15-33ec-4459-9a36-4a04a9339c82",
+  "content": "[ev_6b3d8d51] query-engine db_operation_p95 {'db_operation_name': 'query aggregate'}: reference max 0.009289, peak 0.009873 s\n  09:59:10=0.00929, 09:59:30=0.00914, 09:59:50=0.00914, 10:00:10=0.00912, 10:00:30=0.00961, 10:00:50=0.0097, 10:01:10=0.00978, 10:01:30=0.00955, 10:01:50=0.00961, 10:02:10=0.00948, 10:02:30=0.0096, 10:02:50=0.00943, 10:03:10=0.00951\n[ev_e75b7bed] query-engine db_operation_p95 {'db_operation_name': 'query count'}: reference max 0.00477, peak 0.004788 s\n  09:59:10=0.00477, 09:59:30=0.00477, 09:59:50=0.00475, 10:00:10=0.00475, 10:00:30=0.00477, 10:00:50=0.00477, 10:01:10=0.00477, 10:01:30=0.00479, 10:01:50=0.00479, 10:02:10=0.00477, 10:02:30=0.00475, 10:02:50=0.00475, 10:03:10=0.00475\n[ev_f4a50bae] query-engine db_operation_p95 {'db_operation_name': 'query scan'}: reference max 0.00475, peak 0.00475 s\n  09:59:10=0.00475, 09:59:30=0.00475, 09:59:50=0.00475, 10:00:10=0.00475, 10:00:30=0.00475, 10:00:50=0.00475, 10:01:10=0.00475, 10:01:30=0.00475, 10:01:50=0.00475, 10:02:10=0.00475, 10:02:30=0.00475, 10:02:50=0.00475, 10:03:10=0.00475"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_bb3275ac-8a42-4176-aa97-8d6667f8bb6a",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"metadata\",\"signal\":\"latency_p95\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_bb3275ac-8a42-4176-aa97-8d6667f8bb6a",
+  "content": "[ev_367e72f9] metadata latency_p95 {}: reference max 0.004805, peak 0.004853 s\n  09:59:10=0.0048, 09:59:30=0.0048, 09:59:50=0.0048, 10:00:10=0.00477, 10:00:30=0.0048, 10:00:50=0.00482, 10:01:10=0.00482, 10:01:30=0.00479, 10:01:50=0.00478, 10:02:10=0.00479, 10:02:30=0.00483, 10:02:50=0.00484, 10:03:10=0.00485"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_4976181f-a4e0-4da7-94a6-d6e641bbb639",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"metadata\",\"signal\":\"cache_hit_ratio\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_4976181f-a4e0-4da7-94a6-d6e641bbb639",
+  "content": "[ev_69257db1] metadata cache_hit_ratio {}: reference max 0.9732, peak 0.9732 ratio\n  09:59:10=0.972, 09:59:30=0.973, 09:59:50=0.971, 10:00:10=0.969, 10:00:30=0.969, 10:00:50=0.971, 10:01:10=0.97, 10:01:30=0.97, 10:01:50=0.968, 10:02:10=0.965, 10:02:30=0.964, 10:02:50=0.967, 10:03:10=0.968"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_9312f955-8d49-4604-b029-9bdcf9c5ae8c",
+    "type": "function",
+    "function": {
+     "name": "get_service_spans",
+     "arguments": "{\"service\":\"query-engine\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_9312f955-8d49-4604-b029-9bdcf9c5ae8c",
+  "content": "[ev_dddc3e45] before: server p50 8.7ms p90 15.0ms, error spans 0\nafter: server p50 413.7ms p90 584.2ms, error spans 0\ncalls to metadata: n=3404 p50 1.0ms p90 5.4ms\ncalls to platform-db: n=1702 p50 0.0ms p90 7.6ms"
+ }
+]

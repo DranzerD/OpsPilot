@@ -1,0 +1,26 @@
+id: h-f1-pool-query-engine
+fault:
+  fault_type: db_pool_exhaustion
+  target: query-engine
+  intensity: 1.0
+  params:
+    leak_interval_s: 10
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 24
+label:
+  root_cause:
+    service: query-engine
+    fault_type: db_pool_exhaustion
+  key_evidence:
+  - kind: metric
+    service: query-engine
+    signal: db_pool_utilization
+  - kind: metric
+    service: query-engine
+    signal: db_pool_wait_p95
+  - kind: log
+    service: query-engine
+    pattern: Timed out acquiring connection from pool

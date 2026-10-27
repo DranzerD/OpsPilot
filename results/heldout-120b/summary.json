@@ -1,0 +1,15 @@
+{
+  "agent": {
+    "n": 12,
+    "top1": "70% (7/10)",
+    "top3": "80% (8/10)",
+    "service_top1": "90% (9/10)",
+    "no_fault_cleared": "0% (0/2)",
+    "evidence_relevance": "71%",
+    "citations_valid": "100% (61/61)",
+    "latency_median_s": 16.09,
+    "latency_p95_s": 124.84,
+    "mean_tokens": 6024,
+    "tool_calls_per_run": 1.9
+  }
+}

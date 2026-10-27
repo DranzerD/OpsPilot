@@ -1,0 +1,26 @@
+id: h-f3-timeout-scheduler-metadata
+fault:
+  fault_type: upstream_timeout_misconfig
+  target: scheduler->metadata
+  intensity: 0.7
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 30
+label:
+  root_cause:
+    service: scheduler
+    fault_type: upstream_timeout_misconfig
+  key_evidence:
+  - kind: change
+    service: scheduler
+    change_kind: config
+  - kind: metric
+    service: scheduler
+    signal: dependency_error_ratio
+    labels:
+      peer_service: metadata
+  - kind: log
+    service: scheduler
+    pattern: Upstream metadata call .* exceeded deadline

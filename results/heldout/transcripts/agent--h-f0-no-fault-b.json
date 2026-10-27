@@ -1,0 +1,46 @@
+[
+ {
+  "role": "system",
+  "content": "You are an SRE investigating an incident on a data platform. Find the root cause: the single service whose own fault started the problem, and what kind of fault it is.\n\nPlatform services and dependencies (caller -> callees):\n- gateway (Public API for interactive queries) -> query-engine, metadata\n- query-engine (Plans and executes queries over datasets) -> metadata, platform-db\n- metadata (Dataset catalog, schemas and partitions, with an in-process cache) -> platform-db\n- scheduler (Triggers the nightly ingest pipeline and retries failed jobs) -> stream-processor, metadata\n- stream-processor (Runs ingest jobs that write dataset partitions) -> metadata, platform-db\n\nFault types:\n- db_pool_exhaustion: the service's database connection pool is exhausted (e.g. leaked connections)\n- dependency_latency: the service itself became slow, slowing everything that calls it\n- upstream_timeout_misconfig: the service's timeout for calls to a dependency is misconfigured too low\n- bad_input_job_failure: batch jobs fail on malformed/invalid input data\n- bad_deploy_errors: a new deploy of the service introduced errors\n- slow_query: a database query became slow\n- memory_leak: the service's memory grows until it degrades\n- consumer_backpressure: a stream consumer can't keep up; lag grows\n- retry_storm: aggressive retries amplify load on a dependency\n- cache_disabled: a cache stopped working, increasing load and latency\n- db_disk_full: the database cannot write (disk full)\n- other: none of the above\n\nHow to work:\n- Start from the briefing. Symptoms propagate UP the call graph: when a service is slow or failing, its callers show errors/latency too. The root cause is usually the most downstream service with its own anomaly, or the service that changed (deploy/config) right before symptoms.\n- Background noise exists: the batch pipeline runs every 2 minutes and briefly raises latency on services that touch the database. Anomalies marked \"(minor)\" are within that normal variation. If the briefing has only minor anomalies and no error log patterns, error spans or changes, submit \"no_incident\" without drilling down.\n- Check the timeline: the cause starts first. Changes that happen after symptoms began, or that restore earlier settings, are reactions, not causes.\n- Drill down with tools only when it changes your answer. You have at most 7 turns.\n- If nothing is meaningfully wrong (no clear anomaly or error pattern), submit status \"no_incident\". If something is wrong but evidence doesn't support a cause, submit \"insufficient_evidence\".\n- Cite evidence ids (ev_...) exactly as given; never invent ids.\n- Finish by calling submit_diagnosis with up to 3 ranked hypotheses."
+ },
+ {
+  "role": "user",
+  "content": "Incident briefing:\n\nWindow 09:22:02-09:26:02 UTC; first 60s used as the normal reference.\n\n## Anomalous signals (earliest first)\n[ev_8066dc65] scheduler dependency_latency_p95 peer_service=stream-processor: 0ms -> 988ms, from 09:23:07\n[ev_6977ea58] metadata db_operation_p95 db_operation_name=INSERT partitions: 0ms -> 70ms, from 09:23:07 (minor)\n[ev_542bd296] stream-processor dependency_latency_p95 peer_service=metadata: 0ms -> 65ms, from 09:23:07 (minor)\n[ev_2638877a] stream-processor db_operation_p95 db_operation_name=DELETE records: 0ms -> 65ms, from 09:25:07 (minor)\n\n## New/increased WARNING+ERROR log patterns\n(none)\n\n## Changes (deploys, config, restarts)\n(none)\n\n## Span behaviour\n(none)"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_7d0bbee9-df01-4d87-bfc8-a73c88eddcf0",
+    "type": "function",
+    "function": {
+     "name": "functions.submit_diagnosis",
+     "arguments": "{\"hypotheses\":[{\"confidence\":0.85,\"evidence\":[\"ev_8066dc65\"],\"fault_type\":\"dependency_latency\",\"service\":\"stream-processor\",\"summary\":\"Scheduler\u2019s dependency latency to stream\u2011processor spiked to ~988\u202fms, indicating that stream\u2011processor was slow and caused the upstream caller to suffer.\"}],\"status\":\"diagnosed\",\"summary\":\"The incident was caused by a slowdown in the stream\u2011processor service, which in turn caused the scheduler to experience high dependency latency when calling it.\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_7d0bbee9-df01-4d87-bfc8-a73c88eddcf0",
+  "content": "error: unknown tool functions.submit_diagnosis"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_db8c4f40-b5af-4924-941b-f0eaf0f60c31",
+    "type": "function",
+    "function": {
+     "name": "submit_diagnosis",
+     "arguments": "{\"hypotheses\":[{\"confidence\":0.85,\"evidence\":[\"ev_8066dc65\"],\"fault_type\":\"dependency_latency\",\"service\":\"stream-processor\",\"summary\":\"Scheduler\u2019s dependency latency to stream\u2011processor spiked to ~988\u202fms, indicating that stream\u2011processor was slow and caused the upstream caller to suffer.\"}],\"status\":\"diagnosed\",\"summary\":\"The incident was caused by a slowdown in the stream\u2011processor service, which in turn caused the scheduler to experience high dependency latency when calling it.\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_db8c4f40-b5af-4924-941b-f0eaf0f60c31",
+  "content": "submitted"
+ }
+]

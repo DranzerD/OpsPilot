@@ -1,0 +1,118 @@
+[
+ {
+  "role": "system",
+  "content": "You are an SRE investigating an incident on a data platform. Find the root cause: the single service whose own fault started the problem, and what kind of fault it is.\n\nPlatform services and dependencies (caller -> callees):\n- gateway (Public API for interactive queries) -> query-engine, metadata\n- query-engine (Plans and executes queries over datasets) -> metadata, platform-db\n- metadata (Dataset catalog, schemas and partitions, with an in-process cache) -> platform-db\n- scheduler (Triggers the nightly ingest pipeline and retries failed jobs) -> stream-processor, metadata\n- stream-processor (Runs ingest jobs that write dataset partitions) -> metadata, platform-db\n\nFault types:\n- db_pool_exhaustion: the service's database connection pool is exhausted (e.g. leaked connections)\n- dependency_latency: the service itself became slow, slowing everything that calls it\n- upstream_timeout_misconfig: the service's timeout for calls to a dependency is misconfigured too low\n- bad_input_job_failure: batch jobs fail on malformed/invalid input data\n- bad_deploy_errors: a new deploy of the service introduced errors\n- slow_query: a database query became slow\n- memory_leak: the service's memory grows until it degrades\n- consumer_backpressure: a stream consumer can't keep up; lag grows\n- retry_storm: aggressive retries amplify load on a dependency\n- cache_disabled: a cache stopped working, increasing load and latency\n- db_disk_full: the database cannot write (disk full)\n- other: none of the above\n\nHow to work:\n- Start from the briefing. Symptoms propagate UP the call graph: when a service is slow or failing, its callers show errors/latency too. The root cause is usually the most downstream service with its own anomaly, or the service that changed (deploy/config) right before symptoms.\n- Background noise exists: the batch pipeline runs every 2 minutes and briefly raises latency on services that touch the database. Anomalies marked \"(minor)\" are within that normal variation. If the briefing has only minor anomalies and no error log patterns, error spans or changes, submit \"no_incident\" without drilling down.\n- Check the timeline: the cause starts first. Changes that happen after symptoms began, or that restore earlier settings, are reactions, not causes.\n- Drill down with tools only when it changes your answer. You have at most 7 turns.\n- If nothing is meaningfully wrong (no clear anomaly or error pattern), submit status \"no_incident\". If something is wrong but evidence doesn't support a cause, submit \"insufficient_evidence\".\n- Cite evidence ids (ev_...) exactly as given; never invent ids.\n- Finish by calling submit_diagnosis with up to 3 ranked hypotheses."
+ },
+ {
+  "role": "user",
+  "content": "Incident briefing:\n\nWindow 09:14:36-09:18:36 UTC; first 60s used as the normal reference.\n\n## Anomalous signals (earliest first)\n[ev_49a4e373] stream-processor latency_p95: 988ms -> 2.38s, from 09:17:06\n[ev_8066dc65] scheduler dependency_latency_p95 peer_service=stream-processor: 988ms -> 2.38s, from 09:17:06\n\n## New/increased WARNING+ERROR log patterns\n[ev_ac5781b7] query-engine ERROR x1 (x0 before) from 09:17:42: Upstream metadata call /datasets/{name} failed: connection_error\n[ev_878ee859] gateway ERROR x1 (x0 before) from 09:17:42: Upstream query-engine call /query failed: HTTP <n>\n\n## Changes (deploys, config, restarts)\n(none)\n\n## Span behaviour\n[ev_caccb6ce] gateway error spans 0 -> 1 (POST /api/query x1)\n[ev_4b2cedfb] query-engine error spans 0 -> 1 (POST /query x1)"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_93984694-3485-4bca-b186-23eb9128bf23",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"metadata\",\"signal\":\"db_pool_utilization\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_93984694-3485-4bca-b186-23eb9128bf23",
+  "content": "[ev_d2d9d661] metadata db_pool_utilization {}: reference max 0, peak 0.2 ratio\n  09:14:41=0, 09:15:01=0, 09:15:21=0, 09:15:41=0, 09:16:01=0, 09:16:21=0, 09:16:41=0, 09:17:01=0.2, 09:17:21=0, 09:17:41=0, 09:18:01=0, 09:18:21=0"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_4cf073bc-43d6-47a6-8858-e2d106d56cd3",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"stream-processor\",\"signal\":\"db_pool_utilization\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_4cf073bc-43d6-47a6-8858-e2d106d56cd3",
+  "content": "[ev_0c180088] stream-processor db_pool_utilization {}: reference max 0, peak 0 ratio\n  09:14:41=0, 09:15:01=0, 09:15:21=0, 09:15:41=0, 09:16:01=0, 09:16:21=0, 09:16:41=0, 09:17:01=0, 09:17:21=0, 09:17:41=0, 09:18:01=0, 09:18:21=0"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_adc3c362-2c8d-4d27-b09e-94a0eb178038",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"stream-processor\",\"signal\":\"db_pool_pending\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_adc3c362-2c8d-4d27-b09e-94a0eb178038",
+  "content": "[ev_b357a0c5] stream-processor db_pool_pending {}: reference max 0, peak 0 count\n  09:14:41=0, 09:15:01=0, 09:15:21=0, 09:15:41=0, 09:16:01=0, 09:16:21=0, 09:16:41=0, 09:17:01=0, 09:17:21=0, 09:17:41=0, 09:18:01=0, 09:18:21=0"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_9df4a3ad-6ad8-45a7-ab69-676f4596b677",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"stream-processor\",\"signal\":\"latency_p95\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_9df4a3ad-6ad8-45a7-ab69-676f4596b677",
+  "content": "[ev_49a4e373] stream-processor latency_p95 {}: reference max 0.9875, peak 2.38 s\n  09:15:01=0.987, 09:15:06=0.987, 09:15:11=0.987, 09:15:16=0.987, 09:15:21=0.987, 09:15:26=0.987, 09:15:31=0.987, 09:15:36=0.987, 09:15:41=0.987, 09:15:46=0.987, 09:15:51=0.987, 09:15:56=0.987, 09:17:06=2.38, 09:17:11=2.38, 09:17:16=2.38, 09:17:21=2.38, 09:17:26=2.38, 09:17:31=2.38, 09:17:36=2.38, 09:17:41=2.38, 09:17:46=2.38, 09:17:51=2.38, 09:17:56=2.38"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_7fde492f-6c49-4de2-a8ef-91370d620ad6",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"peer_service\":\"metadata\",\"service\":\"stream-processor\",\"signal\":\"dependency_latency_p95\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_7fde492f-6c49-4de2-a8ef-91370d620ad6",
+  "content": "[ev_542bd296] stream-processor dependency_latency_p95 {'peer_service': 'metadata'}: reference max 0.06, peak 0.065 s\n  09:15:01=0.06, 09:15:06=0.055, 09:15:11=0.055, 09:15:16=0.055, 09:15:21=0.055, 09:15:26=0.055, 09:15:31=0.055, 09:15:36=0.055, 09:15:41=0.055, 09:15:46=0.055, 09:15:51=0.055, 09:15:56=0.009, 09:17:06=0.065, 09:17:11=0.065, 09:17:16=0.065, 09:17:21=0.065, 09:17:26=0.065, 09:17:31=0.065, 09:17:36=0.065, 09:17:41=0.065, 09:17:46=0.065, 09:17:51=0.065, 09:17:56=0.065"
+ },
+ {
+  "role": "assistant",
+  "tool_calls": [
+   {
+    "id": "fc_a1ebceea-1c2e-4a4e-80c6-2e7ded44378a",
+    "type": "function",
+    "function": {
+     "name": "query_metric",
+     "arguments": "{\"service\":\"metadata\",\"signal\":\"latency_p95\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_a1ebceea-1c2e-4a4e-80c6-2e7ded44378a",
+  "content": "[ev_367e72f9] metadata latency_p95 {}: reference max 0.004832, peak 0.00485 s\n  09:14:41=0.00479, 09:15:01=0.00482, 09:15:21=0.00482, 09:15:41=0.00481, 09:16:01=0.00479, 09:16:21=0.00481, 09:16:41=0.00482, 09:17:01=0.00482, 09:17:21=0.0048, 09:17:41=0.0048, 09:18:01=0.0048, 09:18:21=0.00484"
+ }
+]

@@ -1,0 +1,26 @@
+id: h-f1-pool-metadata
+fault:
+  fault_type: db_pool_exhaustion
+  target: metadata
+  intensity: 1.0
+  params:
+    leak_interval_s: 10
+timeline:
+  baseline_s: 90
+  fault_s: 150
+  recovery_s: 0
+seed: 25
+label:
+  root_cause:
+    service: metadata
+    fault_type: db_pool_exhaustion
+  key_evidence:
+  - kind: metric
+    service: metadata
+    signal: db_pool_utilization
+  - kind: metric
+    service: metadata
+    signal: db_pool_wait_p95
+  - kind: log
+    service: metadata
+    pattern: Timed out acquiring connection from pool

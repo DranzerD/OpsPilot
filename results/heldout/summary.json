@@ -1,0 +1,41 @@
+{
+  "rules": {
+    "n": 12,
+    "top1": "90% (9/10)",
+    "top3": "90% (9/10)",
+    "service_top1": "90% (9/10)",
+    "no_fault_cleared": "50% (1/2)",
+    "evidence_relevance": "87%",
+    "citations_valid": "100% (45/45)",
+    "latency_median_s": 0.12,
+    "latency_p95_s": 0.18,
+    "mean_tokens": 0,
+    "tool_calls_per_run": 0
+  },
+  "agent": {
+    "n": 12,
+    "top1": "70% (7/10)",
+    "top3": "70% (7/10)",
+    "service_top1": "80% (8/10)",
+    "no_fault_cleared": "0% (0/2)",
+    "evidence_relevance": "76%",
+    "citations_valid": "100% (58/58)",
+    "latency_median_s": 13.57,
+    "latency_p95_s": 48.45,
+    "mean_tokens": 2755,
+    "tool_calls_per_run": 0.5
+  },
+  "agent-notools": {
+    "n": 12,
+    "top1": "70% (7/10)",
+    "top3": "70% (7/10)",
+    "service_top1": "80% (8/10)",
+    "no_fault_cleared": "0% (0/2)",
+    "evidence_relevance": "70%",
+    "citations_valid": "100% (56/56)",
+    "latency_median_s": 11.09,
+    "latency_p95_s": 15.8,
+    "mean_tokens": 1511,
+    "tool_calls_per_run": 0
+  }
+}
